@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Text Eraser — 文字擦除</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">✦</span>
+    <span class="title">Text Eraser</span>
+    <span class="subtitle">基于 PatchMatch 的文字擦除（参考区 = 整图 − 文字）</span>
+  </div>
+</header>
+
+<main>
+  <section class="preview">
+    <div class="panel">
+      <h3>原图</h3>
+      <div class="imgbox" id="boxOrig"><span class="hint">上传图片或点击下方"使用示例图"</span></div>
+    </div>
+    <div class="panel">
+      <h3>红蒙版 <small>(叠原图 · 红色=将要清除的字形)</small></h3>
+      <div class="imgbox" id="boxMask"><span class="hint">蒙版会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel" id="panelDeglow" hidden>
+      <h3>去发光 <small>(deglow_first 实验 · 去除发光后的全图)</small></h3>
+      <div class="imgbox" id="boxDeglow"><span class="hint">开启「先去发光再去字」后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>文字图层 <small>(透明底 · 从原图提取出的字)</small></h3>
+      <div class="imgbox" id="boxText"><span class="hint">文字图层会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>擦除结果</h3>
+      <div class="imgbox" id="boxResult"><span class="hint">结果会在擦除完成后显示</span></div>
+    </div>
+  </section>
+
+  <div class="batch-pager" id="batchPager" hidden>
+    <button id="batchPrev" class="pager-btn">◀ 上一张</button>
+    <span id="batchCounter" class="pager-counter">0/0</span>
+    <span id="batchName" class="pager-name"></span>
+    <button id="batchNext" class="pager-btn">下一张 ▶</button>
+  </div>
+
+  <section class="controls">
+    <div class="ctrl-row">
+      <label class="file-btn">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <span>📁 选择图片</span>
+      </label>
+      <button class="example-btn" id="exampleBtn">🎯 使用示例图</button>
+      <button class="hist-btn" id="histBtn">📜 历史</button>
+
+      <details class="advanced" open>
+        <summary>高级参数（默认值即可复现）</summary>
+        <div class="adv-grid">
+          <label>mask_pad<small>(mask 外扩像素, 2=甜点)</small>
+            <input type="number" id="maskPad" min="0" max="20" step="1" value="2">
+          </label>
+          <label>q_off<small>(蒙版紧密度 30~70, 55=兼顾深浅字)</small>
+            <input type="number" id="qOff" min="30" max="70" step="1" value="55">
+          </label>
+          <label>max_area_ratio<small>(单块面积上限, 0.40=放行汉字粘连块)</small>
+            <input type="number" id="maxAreaRatio" min="0.05" max="1.0" step="0.05" value="0.40">
+          </label>
+          <label>max_box_ratio<small>(文字框/原图面积, 小图大字调到 0.6+)</small>
+            <input type="number" id="maxBoxRatio" min="0.1" max="1.0" step="0.05" value="0.40">
+          </label>
+          <label>纹理方向<small>(°, 空=关闭; 沿此方向取纹理)</small>
+            <input type="number" id="direction" min="-180" max="180" step="1" placeholder="如 60">
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="edgeAware">
+            边缘感知(实验性, 默认关)
+          </label>
+          <label>移动边缘<small>(≈PS 选区扩展/收缩, 正=扩, 负=缩, 0=关)</small>
+            <input type="number" id="edgeExtend" min="-5" max="5" step="1" value="1">
+          </label>
+          <label>发光处理<small>(白字+绿光晕 / 红蒙版叠加)</small>
+            <select id="glowMode">
+              <option value="auto">auto · A+B混合(推荐)</option>
+              <option value="autov1.1">autov1.1 · 范围补齐(保守)</option>
+              <option value="deglow_first">deglow_first · 先去发光再去字(实验)</option>
+              <option value="off">off · 关闭发光处理</option>
+            </select>
+          </label>
+          <label>去发光强度<small>(0=不去色, 1=完全去除)</small>
+            <input type="number" id="deglowStrength" min="0" max="1" step="0.05" value="1">
+          </label>
+          <label>绿检出阈值<small>(g−max(R,B)超过即视为光晕, 越小越灵敏, 默认6)</small>
+            <input type="number" id="deglowGreenThr" min="0.5" max="20" step="0.5" value="6">
+          </label>
+          <label>去发光范围<small>(px, 覆盖光晕的半径, 默认24, 溢出时调大到40~60)</small>
+            <input type="number" id="deglowRange" min="0" max="200" step="2" value="24">
+          </label>
+          <label>绿最低亮度<small>(g_lo, 默认85, 溢出时调低到60~70可清更暗的残绿)</small>
+            <input type="number" id="deglowGlo" min="40" max="160" step="5" value="85">
+          </label>
+          <label>白字保护<small>(1=默认保护, 调到0.5~0减少保护多去绿, 可能伤字边)</small>
+            <input type="number" id="deglowProtect" min="0" max="1" step="0.05" value="1">
+          </label>
+          <label>蒙版透明度扩展<small>(px, 0=关; 外围半透明填充带, 扩覆盖不毁纹理)</small>
+            <input type="number" id="deglowMaskSoft" min="0" max="150" step="1" value="0">
+          </label>
+          <label>去发光方案<small>(算法选择)</small>
+            <select id="deglowScheme">
+              <option value="channel">通道法 · 绿光晕(现有)</option>
+              <option value="v4">通用 v4.1 · 自动辨识(新)</option>
+              <option value="off">off · 关闭去发光</option>
+            </select>
+          </label>
+        </div>
+        <p class="adv-note">可见效果靠 mask_pad 和 q_off；max_*_ratio 只在「检出失败/误杀」时调高。纹理方向用于有主导纹理(岩石条带/木纹)时让填充沿该方向延展。</p>
+      </details>
+
+      <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
+      <button class="download-btn" id="downloadBtn" hidden>💾 结果 PNG</button>
+      <button class="download-btn small" id="downloadTextBtn" hidden>✂️ 文字图层</button>
+      <button class="download-btn small" id="downloadMaskBtn" hidden>🔴 蒙版透明</button>
+    </div>
+    <div class="status" id="status">就绪</div>
+  </section>
+
+  <section class="hist-panel" id="histPanel" hidden>
+    <div class="hist-head">
+      <span>历史记录 — 点击缩略图 = 选为当前图片；或批量依次处理</span>
+      <button id="histRunAll" class="run-btn small">▶ 依次处理全部</button>
+      <button id="histClose" class="ghost-btn small">✕</button>
+    </div>
+    <div class="hist-grid" id="histGrid"></div>
+    <div class="hist-note" id="histNote"></div>
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

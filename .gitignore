@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# 运行/测试产物
+data/
+*.bin
+
+# 下载的模型文件（自动下载，勿入库）
+core/models/det/*.onnx
