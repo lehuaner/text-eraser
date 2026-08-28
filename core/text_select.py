@@ -790,6 +790,64 @@ def _deglow_full_green(rgb: np.ndarray, tmask: np.ndarray,
     return out.clip(0, 255).astype(np.uint8), glow
 
 
+def _geodesic_background(rgb: np.ndarray, zone: np.ndarray) -> np.ndarray:
+    """测地最近源背景色场: zone 内每个像素取「测地成本最小的背景像素」颜色。
+
+    多源 Dijkstra(4 邻域), 边权 = 1(步进) + 3×相邻亮度差。跨强边界(如 668 的
+    浅/深两色块交界, Δlum≈37)单步代价 100+, 传播会沿同色块内绕行 → 浅色区选
+    浅色源、深色区选深色源, 消除「zone 吞噬整块色块后, Telea 羽化把异色背景
+    填进去」的串色。源选择是低频决策 → 在降采样网格上算再双线性上采样, 快。
+
+    Args:
+        rgb: 原图 HxWx3 uint8
+        zone: bool (H,W) 待重建区
+    Returns:
+        B: (H,W,3) float32 背景色场(已轻平滑, 无高频)
+    """
+    import heapq
+    H, W = rgb.shape[:2]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    scale = 4 if min(H, W) >= 160 else 2
+    H2, W2 = max(2, H // scale), max(2, W // scale)
+    lum = cv2.resize(gray, (W2, H2), interpolation=cv2.INTER_AREA)
+    rz = cv2.resize(zone.astype(np.uint8) * 255, (W2, H2),
+                    interpolation=cv2.INTER_NEAREST) > 127
+    rgb_s = cv2.resize(rgb, (W2, H2), interpolation=cv2.INTER_AREA)
+    src_mask = ~rz
+
+    INF = float("inf")
+    dist = np.full((H2, W2), INF, np.float32)
+    src_y = np.zeros((H2, W2), np.int32)
+    src_x = np.zeros((H2, W2), np.int32)
+    heap = []
+    ys, xs = np.nonzero(src_mask)
+    for yy, xx in zip(ys, xs):
+        dist[int(yy), int(xx)] = 0.0
+        src_y[int(yy), int(xx)] = int(yy)
+        src_x[int(yy), int(xx)] = int(xx)
+        heap.append((0.0, int(yy), int(xx)))
+    heapq.heapify(heap)
+    while heap:
+        d, y, x = heapq.heappop(heap)
+        if d > dist[y, x]:
+            continue
+        sy, sx = src_y[y, x], src_x[y, x]
+        lv = lum[y, x]
+        for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+            if ny < 0 or ny >= H2 or nx < 0 or nx >= W2:
+                continue
+            nd = d + 1.0 + 3.0 * abs(lum[ny, nx] - lv)
+            if nd < dist[ny, nx]:
+                dist[ny, nx] = nd
+                src_y[ny, nx] = sy
+                src_x[ny, nx] = sx
+                heapq.heappush(heap, (nd, int(ny), int(nx)))
+    B_s = rgb_s[src_y, src_x].astype(np.float32)     # (H2,W2,3) 源色
+    B = cv2.resize(B_s, (W, H), interpolation=cv2.INTER_CUBIC)
+    B = cv2.GaussianBlur(B, (0, 0), 4.0)             # 轻平滑: 去源块拼接感
+    return B
+
+
 def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                           g_thr: int = 2, g_lo: int = 60,
                           min_strong: int = 30,
@@ -881,35 +939,36 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
     # 5) 方案B: 发光区(非文字)低频颜色场延拓重建 —— 光晕是低频现象(平滑的
-    #    亮/色偏移)。把「背景低频色场」从 zone 边界平滑延展进发光区(拉普拉斯
-    #    松弛, 非均色), 再叠回原图高频纹理:
-    #       final = 延拓低频 + (原图 − 原低频)
+    #    亮/色偏移)。把「背景低频色场」从 zone 边界平滑延展进发光区, 再叠回
+    #    原图高频纹理:
+    #       final = 背景色场 + 细节
     #    → 发光区底色与 zone 外背景无缝连续、保留细节, 消除「被去发光区域 vs
     #      发光以外区域」的亮差/色差(如 556 暖灰背景上的绿字)。
     # 保护圈 = 文字笔画 + protect_px 外扩(前端可调, 默认 1px): 界定「文字本体」
-    # 与「光晕区」。圈内只做减绿(去绿铸, 可见文字中性但留本色AA), 圈外光晕用
-    # 背景羽化重建。太宽(如 4px)会把光晕混入文字的颜色也保留成"边缘绿"。
+    # 与「光晕区」。圈内只做减绿(去绿铸), 圈外光晕用背景羽化重建。太宽(如
+    # 4px)会把光晕混入文字的颜色也保留成"边缘绿"。
     protect2 = cv2.dilate(text_stroke.astype(np.uint8), k3,
                           iterations=max(0, int(protect_px))) > 0
     fb = zone & ~protect2
     # zone 占比过大的(≈整图都是"发光区", 如 635 的 75x78 小图)没有背景源,
     # 羽化重建无从传播 → 跳过, 维持纯减绿(此时保护圈外几乎无区域)。
     if fb.any() and zone.sum() < 0.8 * H * W:
-        # 背景场景延拓: 以「整个 zone」为 mask, 羽化(Telea-FMM)只允许 zone 外
-        # 的**真实背景**向内部传播 —— 光晕区底色 = 邻接背景的平滑延拓,
-        # 无发光-非发光区域的亮差/色差(556 暖灰背景实测原始 ΔL=+40 → ~0)。
-        # 再叠 σ2 高斯高通细节(只取小尺度纹理, 光晕 DC 被抵消, 非"均色")。
-        # 注意: 距文字 0~8px 内 detail 从 0 线性抬升 —— 防止文字/光晕边缘的
-        # 绿色高频被 detail 加回成"文字边缘一圈绿"(实测 0~2px detail 绿度 +4)。
-        msk = zone.astype(np.uint8) * 255
-        B = cv2.inpaint(out.clip(0, 255).astype(np.uint8), msk, 5,
-                        cv2.INPAINT_TELEA)
+        # 背景色场用「测地最近源」重建: zone 内每像素取「测地成本最小的背景
+        # 像素」的颜色。边权 = 1(步进) + 3×相邻亮度差 —— 跨强边界(如 668 的
+        # 浅/深两色块交界, Δlum≈37)代价大, 传播沿同色块内绕行, 浅色区选浅色
+        # 源、深色区选深色源 → 消除「zone 吞噬整块色块后, 羽化把异色背景填进
+        # 去」的串色(替换 Telea 的欧氏最近源; 此前的 Telea 会把浅色区补成深色)。
+        # 关键: 待重建区先**内收 3px**再当 mask —— 让紧贴 zone 的浅/深色块边缘
+        # 露出一小圈"同色源", 测地才能沿色块把正确颜色送进被整体吞噬的区域
+        # (若整块色块全被 zone 盖住, 插值数学上无同色源可用, 任何算法都会串色)。
+        geo_mask = cv2.erode(zone.astype(np.uint8), k3, iterations=3) > 0
+        B = _geodesic_background(rgb, geo_mask)
         imgf = rgb.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
                                       cv2.DIST_L2, 5)
         dw = np.clip(dtext / 8.0, 0.0, 1.0)[..., None]
         detail = (imgf - cv2.GaussianBlur(imgf, (0, 0), 2.0)) * dw
-        rebuilt = np.clip(B.astype(np.float32) + detail, 0, 255)
+        rebuilt = np.clip(B + detail, 0, 255)
         for c in range(3):
             out[..., c] = np.where(fb, rebuilt[..., c].astype(np.int16),
                                    out[..., c])
