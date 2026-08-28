@@ -20,7 +20,8 @@ import numpy as np
 import cv2
 
 from core.text_select import (detect_text_mask, _deglow_faint_green,
-                              _deglow_faint_green_v11, _deglow_full_green)
+                              _deglow_faint_green_v11, _deglow_full_green,
+                              _deglow_full_green_v2)
 from core.patch_fill import inpaint as pm_inpaint
 
 
@@ -194,6 +195,19 @@ def _erase_once(
             fill_max_dist=fill_max_dist,
             deglow_strength=deglow_strength,
             soft_expand=msoft,
+        )
+
+    # 原型 v2: 发光区 alpha 分解恢复纹理 + mask 收紧到高α核心(详见 _deglow_full_green_v2)
+    if deglow_scheme == "v2":
+        return _erase_deglow_v2(
+            rgb, edge=edge, q_off=q_off,
+            max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
+            ml_max_side=ml_max_side, direction=direction,
+            edge_aware=edge_aware,
+            return_mask=return_mask, fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
+            deglow_strength=deglow_strength,
+            alpha_core=0.65, soft_expand=msoft,
         )
 
     use_tint = tint_fill and (glow_mode_eff != "off")
@@ -570,6 +584,50 @@ def _erase_deglow_first(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     else:
         result, meta = res
     # 去发光中间图供前端展示「去除发光后的全图」
+    meta["deglow_img"] = clean
+    return (result, mask_filled, meta) if return_mask else (result, meta)
+
+
+def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
+                     ml_max_side, direction, edge_aware,
+                     return_mask, fill_white: bool = True,
+                     fill_max_dist: int = 12,
+                     deglow_strength: float = 1.0,
+                     alpha_core: float = 0.65,
+                     soft_expand: float = 0.0):
+    """原型 v2 入口：发光区用 alpha 分解恢复纹理, mask 只收紧到(文字+高α核心)。
+
+    与 _erase_deglow_first(整片拉暗+大 mask) 的区别：
+      - _deglow_full_green_v2 已把外圈半透明光晕反解成底层背景纹理(纹理不丢)；
+      - 填充 mask 只含文字笔画 + 近文字高不透明核心 → patchmatch 只填一小块,
+        不瞎猜大块纹理, 填入样本取自周围已恢复纹理的光晕, 自然无缝。
+    """
+    t0 = time.time()
+    # 1) 定位文字(保护 + 填充基底)
+    tmask, boxes = detect_text_mask(
+        rgb, method="ml", q_off=q_off,
+        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
+        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
+    )
+    if not tmask.any():
+        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
+                "method": "ml", "boxes": []}
+        return (rgb, tmask, meta) if return_mask else (rgb, meta)
+
+    # 2) 发光区 alpha 分解: 外圈恢复纹理(clean), 返回「文字+高α核心」填充 mask
+    clean, fill_mask = _deglow_full_green_v2(
+        rgb, tmask, strength=deglow_strength, alpha_core=alpha_core)
+
+    # 3) 仅填充「发光区内白色文字 + 近文字高α核心」这块小区域
+    #    (不在去绿后重检文字: 分解保留了亮度, 整团亮光晕会被 DBNet 误检回文字)
+    res = _run_fill(clean, fill_mask, boxes, edge=edge, direction=direction,
+                    edge_aware=edge_aware,
+                    return_mask=return_mask, t0=t0, soft_expand=soft_expand)
+    if return_mask:
+        result, mask_filled, meta = res
+    else:
+        result, meta = res
     meta["deglow_img"] = clean
     return (result, mask_filled, meta) if return_mask else (result, meta)
 

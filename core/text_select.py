@@ -716,6 +716,95 @@ def _deglow_full_green(rgb: np.ndarray, tmask: np.ndarray,
     return out.clip(0, 255).astype(np.uint8), glow
 
 
+def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
+                          g_thr: int = 2, g_lo: int = 70,
+                          min_strong: int = 30,
+                          white_floor: int = 120,
+                          rounds_max: int = 400,
+                          strength: float = 1.0,
+                          alpha_core: float = 0.65,
+                          zone_ratio: float = 0.6,
+                          debug: bool = False) -> tuple:
+    """原型 v2：发光区用「真·alpha 分解」恢复底层纹理，mask 只收紧到高α核心+文字。
+
+    与 _deglow_full_green(整片发光区 lerp→背景色平涂) 的根本区别：
+      - 外圈(α 小、半透明)用 B=(I − α·Glow)/(1−α) 反解恢复底层背景纹理，
+        不再把整片拉成单一背景色 → 纹理不丢；
+      - alpha 估计在 α 小处数值稳定(分母 1−α 接近 1)，正是光晕主体；
+        仅在 α→1 的近文字高不透明区才发散，所以那部分(α>alpha_core)才
+        并入填充 mask，交给 patchmatch 只填这一小块 → 不瞎猜大块纹理。
+    返回 (去发光后的 rgb, 填充用 mask 0/255)。普通图(无强绿信号)零改动。
+    strength∈[0,1]：恢复力度，1=完全按分解恢复。
+    """
+    out = rgb.astype(np.int16)
+    r = rgb[..., 0].astype(np.int16)
+    g = rgb[..., 1].astype(np.int16)
+    b = rgb[..., 2].astype(np.int16)
+    s = float(np.clip(strength, 0.0, 1.0))
+    H, W = rgb.shape[:2]
+    empty = np.zeros((H, W), np.uint8)
+    if s <= 0:
+        return rgb, empty
+
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    green = (g - np.maximum(r, b) > g_thr) & (g > g_lo)
+    strong_green = (g - np.maximum(r, b) > 15) & (g > 100)
+    if int(strong_green.sum()) < min_strong:        # 无强发光 → 普通图, 零改动
+        return rgb, empty
+
+    # 文字笔画: min 够亮 且 非强绿(白色文字 g 仅略高; 发光 g 明显主导)
+    min_rgb = np.minimum(np.minimum(r, g), b)
+    text_stroke = (min_rgb > white_floor) & ((g - np.maximum(r, b)) < 40)
+
+    # 从文字蒙版/强绿像素沿「绿 | 比背景亮」自适应生长出整片发光区(非写死范围)
+    # 以强绿像素播种: 即使强发光图文字检测失败(tmask 空), 发光区也能被覆盖。
+    bg_cand = gray[~strong_green]
+    bg_lum = float(np.median(bg_cand)) if bg_cand.size else 80.0
+    bright = (gray > (bg_lum + 10)) & (gray > 70)
+    grow_cond = green | bright
+    zone = (strong_green | (tmask > 0)).copy()
+    cur = zone
+    budget = int(H * W * zone_ratio)
+    k3 = np.ones((3, 3), np.uint8)
+    for _ in range(rounds_max):
+        dil = cv2.dilate(cur.astype(np.uint8), k3) > 0
+        add = dil & grow_cond & ~zone
+        if not add.any():
+            break
+        zone |= add
+        if int(zone.sum()) > budget:        # 超预算(可能吞大块亮背景) → 回退
+            zone &= ~add
+            break
+        cur = zone
+
+    # 按"绿度"(G−max(R,B))从 G 通道减去绿光, 直接去发光:
+    #   发光物理 ≈ 在背景上叠加绿光 → I 的 G 通道高出 R/B 的部分就是叠加的绿光
+    #   去发光 = G' = G − greenness → G' 接近 max(R,B) → 中性灰(原背景色)
+    # R/B 通道保持 → 底层纹理完整保留；只减 G 通道 → 不可能减到黑, 数值天然稳定。
+    # 强度 strength 控制去绿力度(1=完全去绿, <1=保留少量绿光晕)。
+    m_zone = zone & ~text_stroke
+    if not m_zone.any():
+        return rgb, (tmask > 0).astype(np.uint8)
+    greenness = np.maximum(g.astype(np.int16) - np.maximum(r, b), 0)  # 绿度, 非负
+    if m_zone.any():
+        Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
+        out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
+
+    # 文字笔画约束到「真正的强绿区」附近(dilate(strong_green)), 避免吞远处亮背景。
+    _k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
+    text_stroke_z = text_stroke & (cv2.dilate(strong_green.astype(np.uint8), _k8) > 0)
+    # 填充 mask 只含白色文字笔画。发光区已按"减绿度"去光变成中性灰(背景色),
+    # 不再进 fill(进 fill 会让 patchmatch 在分解后的单色区上瞎填纹理)。
+    core_mask = text_stroke_z.astype(np.uint8) * 255
+    clean = out.clip(0, 255).astype(np.uint8)
+    if debug:
+        dbg = dict(strong_green=strong_green, zone=zone, text_stroke=text_stroke,
+                   m_zone=m_zone, greenness=greenness)
+        return clean, core_mask, dbg
+    return clean, core_mask
+
+
+
 def _deglow_faint_green_v11(rgb: np.ndarray, tmask: np.ndarray,
                             thr: int = 6, g_lo: int = 85,
                             thr_strong: int = 15, g_strong: int = 100,
