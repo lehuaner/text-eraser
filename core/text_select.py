@@ -799,6 +799,7 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                           alpha_core: float = 0.65,
                           zone_ratio: float = 0.6,
                           zone_expand: int = 24,
+                          protect_px: int = 1,
                           debug: bool = False) -> tuple:
     """原型 v2：发光区用「真·alpha 分解」恢复底层纹理，mask 只收紧到高α核心+文字。
 
@@ -879,41 +880,39 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
-    # 5) 环带残迹中和: 纯减绿对两类发光区会留下病态残迹 ——
-    #      · 暖绿(R>B, 如黄绿光晕): R/B 通道不动, 去绿后露红/橙(视觉显红);
-    #      · 暗绿(G 明显主导但 R/B 本底暗): 减绿后亮度跌到背景之下(视觉显黑)。
-    #    对 zone 内、文字保护圈外的像素, 若亮度明显低于背景 或 明显偏暖(R−B 大),
-    #    按偏离程度向背景色温和靠拢; 中性且亮度接近背景的像素 t≈0 不动(纹理保留)。
-    protect2 = cv2.dilate(text_stroke.astype(np.uint8), k3, iterations=2) > 0
-    ring = zone & ~protect2
-    if ring.any():
-        ng2 = ~zone
-        bthr = float(np.percentile(gray[ng2], 40)) if ng2.any() else bg_lum
-        bg_msk2 = ng2 & (gray < max(bthr, 70))
-        bg_col = rgb[bg_msk2].mean(0).astype(np.float32) if bg_msk2.any() \
-            else np.array([bg_lum] * 3, np.float32)
-        rr = out[ring, 0].astype(np.float32)
-        gg = out[ring, 1].astype(np.float32)
-        bb = out[ring, 2].astype(np.float32)
-        lum_r = 0.299 * rr + 0.587 * gg + 0.114 * bb
-        t_dark = np.clip((bg_lum - lum_r) / 14.0, 0.0, 1.0)   # 比背景越暗越补
-        t_warm = np.clip((rr - bb - 10.0) / 20.0, 0.0, 1.0)   # 越暖(红>蓝)越中和
-        t = np.clip(np.maximum(t_dark, t_warm) * 0.8, 0.0, 1.0)
-        # 展开成整图掩码再写(链式高级索引写不进副本, 必须用整图布尔掩码)
-        tmap = np.zeros(zone.shape, np.float32)
-        tmap[ring] = t
-        sel3 = tmap > 0.02
-        if sel3.any():
-            rw = out[sel3, 0].astype(np.float32)
-            gw2 = out[sel3, 1].astype(np.float32)
-            bw = out[sel3, 2].astype(np.float32)
-            tw = tmap[sel3]
-            out[sel3, 0] = np.clip(rw * (1 - tw) + bg_col[0] * tw,
-                                   0, 255).astype(np.int16)
-            out[sel3, 1] = np.clip(gw2 * (1 - tw) + bg_col[1] * tw,
-                                   0, 255).astype(np.int16)
-            out[sel3, 2] = np.clip(bw * (1 - tw) + bg_col[2] * tw,
-                                   0, 255).astype(np.int16)
+    # 5) 方案B: 发光区(非文字)低频颜色场延拓重建 —— 光晕是低频现象(平滑的
+    #    亮/色偏移)。把「背景低频色场」从 zone 边界平滑延展进发光区(拉普拉斯
+    #    松弛, 非均色), 再叠回原图高频纹理:
+    #       final = 延拓低频 + (原图 − 原低频)
+    #    → 发光区底色与 zone 外背景无缝连续、保留细节, 消除「被去发光区域 vs
+    #      发光以外区域」的亮差/色差(如 556 暖灰背景上的绿字)。
+    # 保护圈 = 文字笔画 + protect_px 外扩(前端可调, 默认 1px): 界定「文字本体」
+    # 与「光晕区」。圈内只做减绿(去绿铸, 可见文字中性但留本色AA), 圈外光晕用
+    # 背景羽化重建。太宽(如 4px)会把光晕混入文字的颜色也保留成"边缘绿"。
+    protect2 = cv2.dilate(text_stroke.astype(np.uint8), k3,
+                          iterations=max(0, int(protect_px))) > 0
+    fb = zone & ~protect2
+    # zone 占比过大的(≈整图都是"发光区", 如 635 的 75x78 小图)没有背景源,
+    # 羽化重建无从传播 → 跳过, 维持纯减绿(此时保护圈外几乎无区域)。
+    if fb.any() and zone.sum() < 0.8 * H * W:
+        # 背景场景延拓: 以「整个 zone」为 mask, 羽化(Telea-FMM)只允许 zone 外
+        # 的**真实背景**向内部传播 —— 光晕区底色 = 邻接背景的平滑延拓,
+        # 无发光-非发光区域的亮差/色差(556 暖灰背景实测原始 ΔL=+40 → ~0)。
+        # 再叠 σ2 高斯高通细节(只取小尺度纹理, 光晕 DC 被抵消, 非"均色")。
+        # 注意: 距文字 0~8px 内 detail 从 0 线性抬升 —— 防止文字/光晕边缘的
+        # 绿色高频被 detail 加回成"文字边缘一圈绿"(实测 0~2px detail 绿度 +4)。
+        msk = zone.astype(np.uint8) * 255
+        B = cv2.inpaint(out.clip(0, 255).astype(np.uint8), msk, 5,
+                        cv2.INPAINT_TELEA)
+        imgf = rgb.astype(np.float32)
+        dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
+                                      cv2.DIST_L2, 5)
+        dw = np.clip(dtext / 8.0, 0.0, 1.0)[..., None]
+        detail = (imgf - cv2.GaussianBlur(imgf, (0, 0), 2.0)) * dw
+        rebuilt = np.clip(B.astype(np.float32) + detail, 0, 255)
+        for c in range(3):
+            out[..., c] = np.where(fb, rebuilt[..., c].astype(np.int16),
+                                   out[..., c])
 
     # 文字笔画约束到「真正的强绿区」附近(dilate(strong_green)), 避免吞远处亮背景。
     _k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
