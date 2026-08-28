@@ -143,6 +143,7 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
     P = 7                        # 块大小(奇数)
     half = P // 2
     known = ~subm               # 已知区域(随填充扩张)
+    orig_known = known.copy()   # 真·已知(原图纹理)快照：颜色自适应只锚定它，不随填充扩张
     hole = subm.copy()
 
     # 候选源块中心：块完全落在已知区(腐蚀保证)，且整块在 ROI 内(显式剔除边距带，
@@ -230,9 +231,11 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
 
         # 邻域相干：已填四邻域的源中心(结构延续)。方向模式下也保留，
         # 因为相邻像素的线彼此平行，其源也在平行线上 → 连续。
+        # 注意：循环变量用 ndy/ndx，避免遮蔽全局 dy/dx(numpy 数组)——
+        # 否则在结尾 slice 时会变成 int 触发崩溃。
         nb_y = []; nb_x = []
-        for dy, dx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            ny, nx = ty + dy, tx + dx
+        for ndy, ndx in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            ny, nx = ty + ndy, tx + ndx
             if 0 <= ny < sh and 0 <= nx < sw and nnf_set[ny, nx]:
                 nb_y.append(nnf_y[ny, nx]); nb_x.append(nnf_x[ny, nx])
         if nb_y:
@@ -252,33 +255,34 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         return int(pool_y[bi]), int(pool_x[bi])
 
     def _copy_patch(ty, tx, sy, sx):
-        """把源块纹理(经颜色自适应)拷贝进目标块内的洞像素，更新已知图。
+        """把源块纹理(经局部颜色自适应)直接拷贝进目标块内的洞像素，更新已知图。
 
-        重叠软混合：后续块覆盖到「已由前块填过」的像素时，用 50% 加权融合，
-        相邻块之间不再硬切换 → 消除 PatchMatch 常见的小方块拼贴感。
+        设计要点：
+          - 局部颜色自适应：把源块均值/方差对齐到目标块内「原图已知像素」的
+            均值/方差，消除块与块/块与背景之间的颜色接缝；锚点是 orig_known
+            快照(不随填充扩张)，避免每层都向"已被填过的上下文"重新对齐、
+            把纹理对比越压越平。
+          - 不做重叠 0.5 平均：任何相邻块的混合都会把两块不同纹理按 0.5 叠加
+            → 方差几何衰减 → 涂抹/糊成一团(这是历史版本"模糊"的根因)。
+            块级直拷 + sample_mask(只在同图连续纹理取样) + 邻域相干 已足以
+            给出无可见接缝的填充，颜色自适应进一步消色差。
         """
         wy0, wy1 = ty - half, ty + half + 1
         wx0, wx1 = tx - half, tx + half + 1
         tpatch = filled[wy0:wy1, wx0:wx1]
-        tknown = known[wy0:wy1, wx0:wx1]
         src = filled[sy - half:sy + half + 1, sx - half:sx + half + 1].astype(np.float32)
-        # 颜色自适应：把源块均值/方差对齐目标块已知上下文，消除接缝
-        if tknown.any():
-            tmean = tpatch[tknown].mean(0)
-            tstd = tpatch[tknown].std(0) + 1e-3
+        # 局部颜色自适应：仅锚定 orig_known 内 ≥8 个真纹理像素时启用
+        ta = orig_known[wy0:wy1, wx0:wx1]
+        if int(ta.sum()) >= 8:
+            tmean = tpatch[ta].mean(0)
+            tstd = tpatch[ta].std(0) + 1e-3
             smean = src.reshape(-1, 3).mean(0)
             sstd = src.reshape(-1, 3).std(0) + 1e-3
             src = (src - smean) * (tstd / sstd) + tmean
         win = hole[wy0:wy1, wx0:wx1]
         view = filled[wy0:wy1, wx0:wx1]
-        prev_known = known[wy0:wy1, wx0:wx1]
-        # 未填像素：直接拷贝源块
         view[win] = src[win]
-        # 已由前块填过的重叠像素：与源块半融合，柔软过渡
-        overlap = prev_known & ~win
-        if overlap.any():
-            view[overlap] = (view[overlap] + src[overlap]) * 0.5
-        known[wy0:wy1, wx0:wx1][win | overlap] = True
+        known[wy0:wy1, wx0:wx1][win] = True
         hole[wy0:wy1, wx0:wx1][win] = False
 
     if dir_vec is None:

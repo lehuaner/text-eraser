@@ -58,8 +58,8 @@
       <details class="advanced" open>
         <summary>高级参数（默认值即可复现）</summary>
         <div class="adv-grid">
-          <label>mask_pad<small>(mask 外扩像素, 2=甜点)</small>
-            <input type="number" id="maskPad" min="0" max="20" step="1" value="2">
+          <label>移动边缘<small>(≈PS 选区扩展/收缩, 正=扩, 负=缩, 0=只取Otsu字形, 1=默认)</small>
+            <input type="number" id="edge" min="-5" max="20" step="1" value="1">
           </label>
           <label>q_off<small>(蒙版紧密度 30~70, 55=兼顾深浅字)</small>
             <input type="number" id="qOff" min="30" max="70" step="1" value="55">
@@ -77,8 +77,12 @@
             <input type="checkbox" id="edgeAware">
             边缘感知(实验性, 默认关)
           </label>
-          <label>移动边缘<small>(≈PS 选区扩展/收缩, 正=扩, 负=缩, 0=关)</small>
-            <input type="number" id="edgeExtend" min="-5" max="5" step="1" value="1">
+          <label class="checkbox">
+            <input type="checkbox" id="fillWhite" checked>
+            亮白补全(默认开；关闭→回到纯净 Otsu，小张图非文字浅色区不再被锁)
+          </label>
+          <label>白段最大距离<small>(亮白补全时吞并远处纯白像素的距离上限,px；0=只走连通+AA尾部；典型白边/AA<8px,默认 12 够用;调到 32 会误吞远处光斑/亮背景)</small>
+            <input type="number" id="fillMaxDist" min="0" max="64" step="1" value="12">
           </label>
           <label>发光处理<small>(白字+绿光晕 / 红蒙版叠加)</small>
             <select id="glowMode">
@@ -114,10 +118,9 @@
             </select>
           </label>
         </div>
-        <p class="adv-note">可见效果靠 mask_pad 和 q_off；max_*_ratio 只在「检出失败/误杀」时调高。纹理方向用于有主导纹理(岩石条带/木纹)时让填充沿该方向延展。</p>
+        <p class="adv-note">可见效果靠「移动边缘」和 q_off；max_*_ratio 只在「检出失败/误杀」时调高。纹理方向用于有主导纹理(岩石条带/木纹)时让填充沿该方向延展。</p>
       </details>
 
-      <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
       <button class="download-btn" id="downloadBtn" hidden>💾 结果 PNG</button>
       <button class="download-btn small" id="downloadTextBtn" hidden>✂️ 文字图层</button>
       <button class="download-btn small" id="downloadMaskBtn" hidden>🔴 蒙版透明</button>
@@ -125,16 +128,20 @@
     <div class="status" id="status">就绪</div>
   </section>
 
-  <section class="hist-panel" id="histPanel" hidden>
+  <aside class="hist-panel sidebar" id="histPanel">
     <div class="hist-head">
-      <span>历史记录 — 点击缩略图 = 选为当前图片；或批量依次处理</span>
-      <button id="histRunAll" class="run-btn small">▶ 依次处理全部</button>
-      <button id="histClose" class="ghost-btn small">✕</button>
+      <span class="hist-title">历史记录</span>
+      <button id="histRunAll" class="run-btn small">▶ 依次处理</button>
+      <button id="histClose" class="ghost-btn small" title="收起侧边栏">✕</button>
     </div>
     <div class="hist-grid" id="histGrid"></div>
-    <div class="hist-note" id="histNote"></div>
-  </section>
+    <div class="hist-note" id="histNote">点击「📜 历史」展开侧边栏</div>
+  </aside>
 </main>
+
+<div class="fab" id="fabErase">
+  <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

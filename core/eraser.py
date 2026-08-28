@@ -56,16 +56,17 @@ def _edge_aware_grow(rgb: np.ndarray, mask_filled: np.ndarray) -> np.ndarray:
 def erase_text(
     rgb: np.ndarray,
     *,
-    mask_pad: int = 2,
+    edge: int = 1,
     q_off: float = 55.0,
     max_area_ratio: float = 0.40,
     max_box_ratio: float = 0.40,
     ml_max_side: int = 960,
     direction: float | None = None,
     edge_aware: bool = False,
-    edge_extend: int = 1,
     return_mask: bool = False,
     tint_fill: bool = True,
+    fill_white: bool = True,
+    fill_max_dist: int = 12,
     glow_mode: str = "auto",
     deglow_strength: float = 1.0,
     deglow_green_thr: float = 6.0,
@@ -79,19 +80,28 @@ def erase_text(
 
     Args:
         rgb: HxWx3 uint8 RGB 图像
-        mask_pad: mask 预外扩像素 (默认 2, 刚好吃掉字形 AA 边缘)
+        edge: 「移动边缘」—— 蒙版(展示)与**填充区域**同步外扩/收缩
+            (正=扩, 0=仅取 Otsu 字形不扩不缩, 负=收缩选区)。默认 1: 在 Otsu 字形
+            基础上椭圆膨胀 1px, 刚好吸收字形 AA 抗锯齿边缘; 要回到 eoff 行为设 2。
         q_off: 传给 detect_text_mask, [30,70], 越高 mask 越贴字形
         max_area_ratio: 传给 detect_text_mask, 给单字粘连大块放行
         ml_max_side: DBNet 推理尺度
         edge_aware: 默认 False. 历史版本用 ellipse(8) 试图吞 AA 边缘, 但会把
             mask 膨胀到占图 60%+, 反而让 patch_fill sample 区不够、产生更多
-            白/红残留; 现在默认关掉, 只用 mask_pad=2 就足够.
-        edge_extend: PS「移动边缘」等价物 —— 蒙版(展示)与**填充区域**同步
-            外扩/收缩 (>0 外扩, 0 不变, <0 收缩)。默认 +1: 把字形最外层 AA
-            过渡边整体包进红蒙版并真正填掉, 消除"边缘露白/露红"。
+            白/红残留; 现在默认关掉, 只用 edge=2 就足够.
         return_mask: True 时返回 (result, mask, meta), 否则 (result, meta)
         tint_fill: True 时启用色偏区域生长(_grow_color_tint, 红蒙版叠加/淡绿光晕
             自动并入蒙版)。False 则不做色偏生长(发光仍可由 glow_mode 处理)。
+        fill_white: True 时启用「临近纯白补全」(_fill_nearby_white)，把紧邻蒙版的
+            亮白/抗锯齿像素并入蒙版，修复描边字漏白。False 则跳过该步，蒙版回到
+            纯 Otsu(近似早期 eoff 行为) —— 小张图的非文字浅色区/衣物高光不再被
+            误锁进填充蒙版。默认 True 保持现状；要"回到之前"时关掉它 +
+            edge=2 + glow_mode="off"(关 tint) 即可。
+        fill_max_dist: fill_nearby_white 「孤立纯白段」步骤的最大吞并距离(px)。
+            默认 12。字符白边/AA 通常 <8px(由 AA 尾部外推兜住),12 足够覆盖;
+            调小更保守(只吃紧邻白段),调大更激进(可能误吞远处亮光斑)。
+            换装.png 实测默认 32 会把顶部 31px 远的光斑误锁 497px 进蒙版,
+            调到 12 干净。0 = 关闭此步(只保留连通白段与 AA 尾部外推)。
         glow_mode: 发光处理策略（在「去发光方案=通道法」时生效）
             "auto" (默认)   — A+B 混合：强光晕并入蒙版填充(B) + 弱光晕边缘
                               通道法去发光(A)。
@@ -128,7 +138,7 @@ def erase_text(
             "off"             — 关闭所有去发光（等价于 glow_mode="off"）。
     Returns:
         result: HxWx3 uint8 RGB 已擦除文字的图片
-        mask:   HxW uint8 (255=将被填充的区域[mask_pad+移动边缘后])  仅当 return_mask=True
+        mask:   HxW uint8 (255=将被填充的区域[移动边缘 edge 后])  仅当 return_mask=True
         meta:   dict with keys {mask_pix, inpaint_seconds, method}
     """
     if rgb.dtype != np.uint8:
@@ -140,11 +150,13 @@ def erase_text(
         glow_mode_eff = "off"
     elif deglow_scheme == "v4":
         return _erase_v4_deglow(
-            rgb, mask_pad=mask_pad, q_off=q_off,
+            rgb, edge=edge, q_off=q_off,
             max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
             ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware, edge_extend=edge_extend,
-            return_mask=return_mask, deglow_strength=deglow_strength,
+            edge_aware=edge_aware,
+            return_mask=return_mask, fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
+            deglow_strength=deglow_strength,
             glow_mode=glow_mode,
         )
     else:
@@ -160,11 +172,13 @@ def erase_text(
     # auto v1.1: A+B 混合 + 范围补齐 + 弱区纹理保留
     if glow_mode_eff == "autov1.1":
         return _erase_auto_v11(
-            rgb, mask_pad=mask_pad, q_off=q_off,
+            rgb, edge=edge, q_off=q_off,
             max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
             ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware, edge_extend=edge_extend,
-            return_mask=return_mask, deglow_strength=deglow_strength,
+            edge_aware=edge_aware,
+            return_mask=return_mask, fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
+            deglow_strength=deglow_strength,
             tint_fill=tint_fill, deglow_green_thr=gthr, deglow_range=grange,
             deglow_glo=glo, deglow_protect=gprot, soft_expand=msoft,
         )
@@ -172,11 +186,13 @@ def erase_text(
     # 实验性: 先去发光再去字
     if glow_mode_eff == "deglow_first":
         return _erase_deglow_first(
-            rgb, mask_pad=mask_pad, q_off=q_off,
+            rgb, edge=edge, q_off=q_off,
             max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
             ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware, edge_extend=edge_extend,
-            return_mask=return_mask, deglow_strength=deglow_strength,
+            edge_aware=edge_aware,
+            return_mask=return_mask, fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
+            deglow_strength=deglow_strength,
             soft_expand=msoft,
         )
 
@@ -184,7 +200,8 @@ def erase_text(
     mask, boxes = detect_text_mask(
         rgb, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=use_tint,
+        max_side=ml_max_side, tint_fill=use_tint, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
 
     if not mask.any():
@@ -206,15 +223,17 @@ def erase_text(
         sample_exclude = _residual_green(rgb, mask)
 
     # 1~3. 共用填充步骤
-    return _run_fill(rgb, mask, boxes, mask_pad=mask_pad, direction=direction,
-                     edge_aware=edge_aware, edge_extend=edge_extend,
+    return _run_fill(rgb, mask, boxes, edge=edge, direction=direction,
+                     edge_aware=edge_aware,
                      return_mask=return_mask, t0=t0, sample_exclude=sample_exclude,
                      soft_expand=msoft)
 
 
-def _erase_auto_v11(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
-                    ml_max_side, direction, edge_aware, edge_extend,
-                    return_mask, deglow_strength=1.0, tint_fill=True,
+def _erase_auto_v11(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
+                    ml_max_side, direction, edge_aware,
+                    return_mask, fill_white: bool = True,
+                    fill_max_dist: int = 12,
+                    deglow_strength=1.0, tint_fill=True,
                     deglow_green_thr=6.0, deglow_range=24,
                     deglow_glo=85.0, deglow_protect=1.0,
                     soft_expand: float = 0.0):
@@ -234,7 +253,8 @@ def _erase_auto_v11(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     tmask, boxes = detect_text_mask(
         rgb, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False,
+        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
     if not tmask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
@@ -256,14 +276,14 @@ def _erase_auto_v11(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     # 4~6. 共用填充步骤
     if return_mask:
         result, mask_filled, meta = _run_fill(
-            clean, mask, boxes, mask_pad=mask_pad, direction=direction,
-            edge_aware=edge_aware, edge_extend=edge_extend,
+            clean, mask, boxes, edge=edge, direction=direction,
+            edge_aware=edge_aware,
             return_mask=True, t0=t0, sample_exclude=sample_exclude,
             soft_expand=soft_expand)
     else:
         result, meta = _run_fill(
-            clean, mask, boxes, mask_pad=mask_pad, direction=direction,
-            edge_aware=edge_aware, edge_extend=edge_extend,
+            clean, mask, boxes, edge=edge, direction=direction,
+            edge_aware=edge_aware,
             return_mask=False, t0=t0, sample_exclude=sample_exclude,
             soft_expand=soft_expand)
     meta["deglow_v11"] = dstats
@@ -290,8 +310,8 @@ def _residual_green(rgb: np.ndarray, mask: np.ndarray,
     return green & near
 
 
-def _run_fill(rgb, mask, boxes, *, mask_pad, direction, edge_aware,
-              edge_extend, return_mask, t0, sample_exclude=None,
+def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
+              return_mask, t0, sample_exclude=None,
               soft_expand: float = 0.0):
     """共用填充步骤：膨胀 mask → sample → patch_fill → meta。
 
@@ -302,9 +322,12 @@ def _run_fill(rgb, mask, boxes, *, mask_pad, direction, edge_aware,
         混合 —— 内缘贴近核心(完全填充)、外缘回归原始 → 扩大覆盖范围的同时
         保留底层纹理不被整块覆盖。软带会被红蒙版以半透明显示(透明度扩展)。
     """
-    # 1. mask 2px 椭圆膨胀: 吃掉 AA 边缘, 否则 patchmatch 会把 AA 像素当上下文
-    if mask_pad > 0:
-        mask_filled = cv2.dilate(mask, _ellipse(mask_pad))
+    # 1. 移动边缘(edge): 椭圆膨胀(>0)/腐蚀(<0)蒙版, 吸收字形 AA 抗锯齿边缘。
+    #    edge=1(默认)=膨胀 1px 吃掉 AA; edge=0=仅取 Otsu 字形; edge<0=收缩选区。
+    if edge > 0:
+        mask_filled = cv2.dilate(mask, _ellipse(edge))
+    elif edge < 0:
+        mask_filled = cv2.erode(mask, _ellipse(-edge))
     else:
         mask_filled = mask.copy()
 
@@ -312,13 +335,6 @@ def _run_fill(rgb, mask, boxes, *, mask_pad, direction, edge_aware,
     #     专门吃掉抗锯齿白边(白字) / 浅色描边, 又不会像大膨胀那样产生 halo。
     if edge_aware:
         mask_filled = _edge_aware_grow(rgb, mask_filled)
-
-    # 1c. PS「移动边缘」(edge_extend): 让**实际填充区域**也随之外扩/收缩,
-    #     与展示红蒙版保持一致 —— 用户外扩时, 露白的外围会被真正填掉。
-    if edge_extend > 0:
-        mask_filled = cv2.dilate(mask_filled, _ellipse(edge_extend))
-    elif edge_extend < 0:
-        mask_filled = cv2.erode(mask_filled, _ellipse(-edge_extend))
 
     # 2. sample_mask: 只在文字外取样
     sample_mask = (255 - mask_filled).astype(np.uint8)
@@ -369,14 +385,16 @@ def _run_fill(rgb, mask, boxes, *, mask_pad, direction, edge_aware,
     if soft_alpha is not None and (soft_alpha > 0).any():
         meta["soft_alpha"] = soft_alpha   # 供红蒙版半透明显示(不落历史)
     if return_mask:
-        # 展示蒙版 = 真实填充区(mask_pad 膨胀 + 移动边缘后) —— 所见即所得
+        # 展示蒙版 = 真实填充区(移动边缘 edge 后) —— 所见即所得
         return result, mask_filled, meta
     return result, meta
 
 
-def _erase_deglow_first(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
-                        ml_max_side, direction, edge_aware, edge_extend,
-                        return_mask, deglow_strength=1.0,
+def _erase_deglow_first(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
+                        ml_max_side, direction, edge_aware,
+                        return_mask, fill_white: bool = True,
+                        fill_max_dist: int = 12,
+                        deglow_strength=1.0,
                         soft_expand: float = 0.0):
     """实验性 glow_mode="deglow_first"：先去发光，再走普通去文字路径。
 
@@ -392,7 +410,8 @@ def _erase_deglow_first(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     tmask, _ = detect_text_mask(
         rgb, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False,
+        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
     if not tmask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
@@ -406,7 +425,8 @@ def _erase_deglow_first(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     mask, boxes = detect_text_mask(
         clean, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=True,
+        max_side=ml_max_side, tint_fill=True, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
     if not mask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
@@ -415,8 +435,8 @@ def _erase_deglow_first(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
 
     # 填充取样剔除残余绿, 防复制进文字区
     sample_exclude = _residual_green(clean, mask)
-    res = _run_fill(clean, mask, boxes, mask_pad=mask_pad, direction=direction,
-                    edge_aware=edge_aware, edge_extend=edge_extend,
+    res = _run_fill(clean, mask, boxes, edge=edge, direction=direction,
+                    edge_aware=edge_aware,
                     return_mask=return_mask, t0=t0, sample_exclude=sample_exclude,
                     soft_expand=soft_expand)
     if return_mask:
@@ -428,9 +448,11 @@ def _erase_deglow_first(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     return (result, mask_filled, meta) if return_mask else (result, meta)
 
 
-def _erase_v4_deglow(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
-                     ml_max_side, direction, edge_aware, edge_extend,
-                     return_mask, deglow_strength=1.0, glow_mode="auto"):
+def _erase_v4_deglow(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
+                     ml_max_side, direction, edge_aware,
+                     return_mask, fill_white: bool = True,
+                     fill_max_dist: int = 12,
+                     deglow_strength=1.0, glow_mode="auto"):
     """v4.1 通用去发光方案：先去发光（deglow 包，三模式辨识+反演+重建），
     再原样走普通去文字路径（detect_text_mask → 膨胀 → patch_fill）。
 
@@ -442,7 +464,8 @@ def _erase_v4_deglow(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     tmask, _ = detect_text_mask(
         rgb, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False,
+        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
 
     # 2) 通用去发光（v4 管线；strength=0 即纯保护路径）
@@ -456,7 +479,8 @@ def _erase_v4_deglow(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
     mask, boxes = detect_text_mask(
         clean, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=True,
+        max_side=ml_max_side, tint_fill=True, fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
     )
     if not mask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
@@ -467,9 +491,9 @@ def _erase_v4_deglow(rgb, *, mask_pad, q_off, max_area_ratio, max_box_ratio,
 
     # 填充取样剔除残余绿（未净发光边缘），防复制进文字区
     sample_exclude = _residual_green(clean, mask)
-    fill = _run_fill(clean, mask, boxes, mask_pad=mask_pad,
+    fill = _run_fill(clean, mask, boxes, edge=edge,
                      direction=direction, edge_aware=edge_aware,
-                     edge_extend=edge_extend, return_mask=return_mask,
+                     return_mask=return_mask,
                      t0=t0, sample_exclude=sample_exclude)
     if return_mask:
         result, mask_filled, meta = fill

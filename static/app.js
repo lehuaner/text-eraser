@@ -17,13 +17,12 @@
   const panelDeglow = $("panelDeglow");
 
   const status = $("status");
-  const maskPadEl = $("maskPad");
   const qOffEl = $("qOff");
   const maxAreaRatioEl = $("maxAreaRatio");
   const maxBoxRatioEl = $("maxBoxRatio");
   const directionEl = $("direction");
   const edgeAwareEl = $("edgeAware");
-  const edgeExtendEl = $("edgeExtend");
+  const edgeEl = $("edge");
   const glowModeEl = $("glowMode");
   const deglowStrengthEl = $("deglowStrength");
   const deglowGreenThrEl = $("deglowGreenThr");
@@ -32,6 +31,8 @@
   const deglowProtectEl = $("deglowProtect");
   const deglowMaskSoftEl = $("deglowMaskSoft");
   const deglowSchemeEl = $("deglowScheme");
+  const fillWhiteEl = $("fillWhite");
+  const fillMaxDistEl = $("fillMaxDist");
 
   let currentFile = null;
   let resultB64 = null;
@@ -53,13 +54,103 @@
     status.className = "status" + (cls ? " " + cls : "");
   }
 
-  function setImg(box, src, alt) {
+  function setImg(box, src, alt, title) {
     if (box.querySelector("img")) box.querySelector("img").remove();
     if (box.querySelector(".hint")) box.querySelector(".hint").remove();
     const img = document.createElement("img");
     img.src = src;
     img.alt = alt;
+    img.style.cursor = "zoom-in";
+    img.title = "点击放大查看（可拖拽、滚轮缩放）";
+    img.dataset.vkey = box.id || "";
+    img.addEventListener("click", () => openViewer(title || alt || "图片", src, img.dataset.vkey));
     box.appendChild(img);
+    syncViewers(box.id || "", src);   // 若已打开对应浮层，跟随刷新
+  }
+
+  /* 结果图重算后，刷新所有已打开且对应此来源的浮层查看器 */
+  function syncViewers(key, src) {
+    if (!key) return;
+    document.querySelectorAll(".viewer").forEach((v) => {
+      if (v.dataset.key === key) {
+        const im = v.querySelector("img");
+        if (im) im.src = src;
+      }
+    });
+  }
+
+  /* ---- 可拖拽 / 可缩放 的图片浮层查看器 ---- */
+  let viewerZ = 1000;
+  function openViewer(title, src, key) {
+    const v = document.createElement("div");
+    v.className = "viewer";
+    v.dataset.key = key || "";        // 绑定数据来源，重擦除后跟随刷新
+    const n = document.querySelectorAll(".viewer").length;
+    v.style.left = (48 + (n % 8) * 28) + "px";
+    v.style.top = (48 + (n % 8) * 28) + "px";
+    v.style.zIndex = ++viewerZ;
+    v.innerHTML =
+      '<div class="viewer-head">' +
+        '<span class="viewer-title"></span>' +
+        '<button class="viewer-btn" data-act="zoomout" title="缩小">－</button>' +
+        '<button class="viewer-btn" data-act="zoomin" title="放大">＋</button>' +
+        '<button class="viewer-btn" data-act="reset" title="原始尺寸">1:1</button>' +
+        '<button class="viewer-btn" data-act="close" title="关闭">✕</button>' +
+      '</div>' +
+      '<div class="viewer-body"><img alt=""></div>';
+    v.querySelector(".viewer-title").textContent = title;
+    const body = v.querySelector(".viewer-body");
+    const img = v.querySelector("img");
+    let scale = 1;
+    function applyScale() {
+      if (img.naturalWidth) {
+        img.style.width = (img.naturalWidth * scale) + "px";
+        img.style.height = (img.naturalHeight * scale) + "px";
+      }
+    }
+    img.onload = applyScale;
+    img.src = src;
+    v.querySelectorAll(".viewer-btn").forEach((b) => {
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const act = b.dataset.act;
+        if (act === "zoomin") scale = Math.min(scale * 1.2, 8);
+        else if (act === "zoomout") scale = Math.max(scale / 1.2, 0.1);
+        else if (act === "reset") scale = 1;
+        else if (act === "close") { v.remove(); return; }
+        applyScale();
+      });
+    });
+    // 滚轮缩放（仅缩放图片本身）
+    body.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      scale *= e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      scale = Math.min(Math.max(scale, 0.1), 8);
+      applyScale();
+    }, { passive: false });
+    // 拖拽：按住标题栏移动整个浮层
+    const head = v.querySelector(".viewer-head");
+    head.addEventListener("mousedown", (e) => {
+      if (e.target.closest(".viewer-btn")) return;
+      e.preventDefault();
+      v.style.zIndex = ++viewerZ;
+      const r = v.getBoundingClientRect();
+      const dx = e.clientX - r.left;
+      const dy = e.clientY - r.top;
+      function move(ev) {
+        v.style.left = (ev.clientX - dx) + "px";
+        v.style.top = (ev.clientY - dy) + "px";
+      }
+      function up() {
+        document.removeEventListener("mousemove", move);
+        document.removeEventListener("mouseup", up);
+      }
+      document.addEventListener("mousemove", move);
+      document.addEventListener("mouseup", up);
+    });
+    v.addEventListener("mousedown", () => { v.style.zIndex = ++viewerZ; });
+    document.body.appendChild(v);
+    return v;
   }
 
   function resetPreview(msg = "请上传图片") {
@@ -118,14 +209,13 @@
   function buildForm(file) {
     const form = new FormData();
     form.append("image", file);
-    form.append("mask_pad", maskPadEl.value);
+    form.append("edge", edgeEl.value);
     form.append("q_off", qOffEl.value);
     form.append("max_area_ratio", maxAreaRatioEl.value);
     form.append("max_box_ratio", maxBoxRatioEl.value);
     const dirVal = directionEl.value.trim();
     if (dirVal !== "") form.append("direction", dirVal);
     form.append("edge_aware", edgeAwareEl.checked ? "true" : "false");
-    form.append("edge_extend", edgeExtendEl.value);
     form.append("glow_mode", glowModeEl.value);
     form.append("deglow_strength", deglowStrengthEl.value);
     form.append("deglow_green_thr", deglowGreenThrEl.value);
@@ -134,6 +224,8 @@
     form.append("deglow_protect", deglowProtectEl.value);
     form.append("deglow_mask_soft", deglowMaskSoftEl.value);
     form.append("deglow_scheme", deglowSchemeEl.value);
+    form.append("fill_white", fillWhiteEl.checked ? "true" : "false");
+    form.append("fill_max_dist", String(parseInt(fillMaxDistEl.value, 10) || 0));
     form.append("return_overlay", "true");
     return form;
   }
@@ -280,7 +372,39 @@
   batchPrev.addEventListener("click", () => showBatchPage(batchIdx - 1));
   batchNext.addEventListener("click", () => showBatchPage(batchIdx + 1));
 
+  // ---- 擦除按钮：右下角可拖拽浮层（FAB） ----
+  let fabDragged = false;
+  (function setupFab() {
+    const fab = $("fabErase");
+    if (!fab) return;
+    const btn = $("runBtn");
+    let down = false, moved = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    btn.addEventListener("mousedown", (e) => {
+      down = true; moved = false;
+      sx = e.clientX; sy = e.clientY;
+      const r = fab.getBoundingClientRect();
+      ox = r.left; oy = r.top;
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", (e) => {
+      if (!down) return;
+      const dx = e.clientX - sx, dy = e.clientY - sy;
+      if (!moved && (Math.abs(dx) > 4 || Math.abs(dy) > 4)) moved = true;
+      if (moved) {
+        fab.style.left = (ox + dx) + "px";
+        fab.style.top = (oy + dy) + "px";
+        fab.style.right = "auto";
+        fab.style.bottom = "auto";
+      }
+    });
+    document.addEventListener("mouseup", () => {
+      if (down && moved) fabDragged = true;
+      down = false; moved = false;
+    });
+  })();
+
   runBtn.addEventListener("click", async () => {
+    if (fabDragged) { fabDragged = false; return; }
     if (!currentFile) return;
     runBtn.disabled = true;
     try {
@@ -326,11 +450,34 @@
       el.dataset.id = it.id;
       const date = it.ts ? new Date(it.ts * 1000).toLocaleString() : "";
       el.innerHTML =
+        `<button class="hist-del" title="删除此记录">✕</button>` +
         `<img src="data:image/png;base64,${it.thumb_b64}" alt="">` +
         `<div class="meta">${(it.name || "image").slice(0, 26)}${it.w ? ` · ${it.w}×${it.h}` : ""}<br>${date}</div>`;
       el.addEventListener("click", () => selectHistoryImage(it));
+      el.querySelector(".hist-del").addEventListener("click", (e) => {
+        e.stopPropagation();
+        deleteHistory(it.id, it.name || "image");
+      });
       histGrid.appendChild(el);
     }
+  }
+
+  /* 删除单条历史记录（带二次确认） */
+  function deleteHistory(id, name) {
+    if (!confirm(`确认删除历史记录「${name}」？此操作不可撤销。`)) return;
+    histNoteEl(`正在删除「${name}」…`, "busy");
+    fetch(`/api/history/${id}`, { method: "DELETE" })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j.ok) {
+          histItems = histItems.filter((it) => it.id !== id);
+          renderHistory();
+          histNoteEl(`已删除「${name}」（剩 ${histItems.length} 条）`, "ok");
+        } else {
+          histNoteEl("删除失败: " + (j.msg || "未知错误"), "err");
+        }
+      })
+      .catch((e) => histNoteEl("删除失败: " + e.message, "err"));
   }
 
   /* 点击历史缩略图 → 作为"当前选择图片"（走选择图片路径，需再点擦除） */
@@ -383,11 +530,12 @@
   });
 
   histBtn.addEventListener("click", () => {
-    const willShow = histPanel.hidden;
-    histPanel.hidden = !willShow;
-    if (willShow) loadHistory();
+    const open = document.body.classList.toggle("sb-open");
+    if (open) loadHistory();
   });
-  $("histClose").addEventListener("click", () => { histPanel.hidden = true; });
+  $("histClose").addEventListener("click", () => {
+    document.body.classList.remove("sb-open");
+  });
 
   function base64ToBlob(b64, mime) {
     const bin = atob(b64);

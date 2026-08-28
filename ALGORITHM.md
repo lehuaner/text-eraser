@@ -60,20 +60,19 @@ Image.fromarray(filled).save("removed.png")
 def erase_text(
     rgb: np.ndarray,                 # HxWx3 uint8 RGB
     *,
-    mask_pad: int = 2,               # 蒙版预外扩(椭圆)像素，吃掉 AA 边缘
+    edge: int = 1,                   # 「移动边缘」：蒙版(展示)与填充区同步外扩(>0)/收缩(<0)；1=膨胀1px吃掉AA边缘
     q_off: float = 55.0,             # 蒙版紧密度 [30,70]，越高越贴字形
     max_area_ratio: float = 0.40,    # 单块文字占图比例上限
     max_box_ratio: float = 0.40,     # 最终框占图比例上限
     ml_max_side: int = 960,          # DBNet 推理最长边
     direction: float | None = None,  # 纹理方向°(木纹/条带时用)
     edge_aware: bool = False,        # 历史实验项，保持 False
-    edge_extend: int = 1,            # 展示蒙版外扩(>0)/收缩(<0)，不影响填充结果
     return_mask: bool = False,
 )
 # return_mask=False -> (result, meta)；True -> (result, mask, meta)
 ```
 
-管线内部 = `detect_text_mask(method="ml", …)` → `dilate(mask, ellipse(mask_pad))` → `sample_mask=整图−膨胀蒙版` → `patch_fill.inpaint(...)` → 按需 `edge_extend` 处理展示蒙版。
+管线内部 = `detect_text_mask(method="ml", …)` → `dilate/erode(mask, ellipse(edge))`（移动边缘，>0 膨胀/<0 腐蚀）→ `sample_mask=整图−膨胀蒙版` → `patch_fill.inpaint(...)`。展示蒙版即真实填充区（移动边缘后），所见即所得。
 
 ### 3.2 `core/text_select.py`（检测 + 蒙版）
 
@@ -149,7 +148,7 @@ def inpaint(image_rgb, mask,
    - ⚠️ 教训：**不要**全局环色对齐，也**不要**填后 bilateral 平滑——两者都已实测毁掉纹理，
      产生"钉子砸在文字上"的平板感（2026-08 两次失败后回滚）。颜色自适应必须保持
      "目标块局部已知上下文"锚定（原版行为），纯色背景的色块拼接感属可接受水平。
-5. **展示蒙版**：`edge_extend` 对返回的 mask 做整体膨胀/腐蚀（=PS 移动边缘），与填充结果解耦。
+5. **展示蒙版**：`edge`（移动边缘）对返回的 mask 做整体膨胀(>0)/腐蚀(<0)（=PS 移动边缘），展示蒙版即真实填充区，所见即所得。
 
 ---
 
@@ -157,11 +156,10 @@ def inpaint(image_rgb, mask,
 
 | 参数 | 出现处 | 默认 | 推荐/说明 |
 |---|---|---|---|
-| `mask_pad` | erase_text | 2 | 填**刚好吃掉 AA 边缘**；过大出 halo |
+| `edge` | erase_text | 1 | 「移动边缘」：蒙版(展示)与填充区同步外扩(>0)/收缩(<0)；1=膨胀1px吃掉AA边缘，2≈旧 mask_pad=2+eoff，0=仅取Otsu字形，负=收缩选区 |
 | `q_off` | erase_text/detect_text_mask | 55.0 | [30,70]，越高越贴字形 |
 | `max_area_ratio` | 检测类 | 0.05(函数)/0.40(管线) | **直接调函数必须显式 0.40** |
 | `max_box_ratio` | 检测类 | 0.40 | 小图大字调高到 0.6+ |
-| `edge_extend` | erase_text | 1 | 展示蒙版 ±px；按需 0 或更大 |
 | `min_area` | 检测类 | 30 | 越小召回小字、越多噪点 |
 | `max_side` | DBNet | 960 | 越大小字召回越好、越慢 |
 | `mask_threshold`/`mask_max_side` | detect_text_mask_ml | 0.4/1600 | 仅备选 ML 蒙版路径用 |
@@ -174,7 +172,7 @@ def inpaint(image_rgb, mask,
 1. **函数裸调默认 `max_area_ratio=0.05` → 大字框被过滤 → 返回空蒙版**。所有直接调用 `detect_text` / `detect_text_mask` 都必须显式传 0.40（erase_text 已带内部默认，无需管）。
 2. **`detect_text_ml` 的 `max_box_ratio` 与 `pad` 互斥**：pad 调大 → 框变大超 ratio → 框被丢。别靠大 pad 捞小字。
 3. **`edge_aware=True` 勿用**（ellipse(8) 大膨胀 → 蒙版占图 60%+，残留反增）。
-4. **“相对亮度带生长”（曾在 ml_text_select，已删除）勿恢复**：以环内亮度中值作锚会把字旁中灰背景块误圈（`武器` 图 790px 灰块即此例）。需要补边缘 → 用 `_fill_nearby_white`（绝对纯白）或 `edge_extend`（均匀外扩 1px）。
+4. **“相对亮度带生长”（曾在 ml_text_select，已删除）勿恢复**：以环内亮度中值作锚会把字旁中灰背景块误圈（`武器` 图 790px 灰块即此例）。需要补边缘 → 用 `_fill_nearby_white`（绝对纯白）或 `edge`（移动边缘，均匀外扩 1px）。
 5. **`detect_text_mask_ml` 只盖字形约 40%**，是"备选独立 API"，不要作为默认蒙版路径。
 6. **回归基线**（默认参数）：`武器` 盖白 2039/2039、残白 0；`座驾` 盖白 1719/1719、残白 0。指标看“白字身覆盖率 + 中灰误收数”，别只看残白。
 7. 回归脚本：`scripts/final_v3.py`（统计 + 3 栏对比图 → `data/final/`）。

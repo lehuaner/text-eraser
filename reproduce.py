@@ -32,10 +32,10 @@ rgb = np.asarray(Image.open(SRC).convert("RGB"), dtype=np.uint8)
 # ---- 唯三关键参数（见 core/eraser.py）----
 # 1) method="ml" + max_area_ratio=0.40  ->  否则"武"+"器"粘连大块(>5%)被 DBNet 丢，mask 变空
 # 2) q_off=70  ->  mask 最贴字形
-# 3) mask_pad=2  ->  mask 2px 椭圆膨胀，吃掉抗锯齿边缘(0px→ghost572, 2px→0)
+# 3) edge=2  ->  mask 2px 椭圆膨胀，吃掉抗锯齿边缘(0px→ghost572, 2px→0)
 result, mask, meta = erase_text(
     rgb,
-    mask_pad=2,          # 关键：2px 椭圆膨胀
+    edge=2,             # 关键：2px 椭圆膨胀（移动边缘合并了原 mask_pad+edge_extend）
     q_off=70.0,          # 关键：最高紧密度，mask 最贴字形
     max_area_ratio=0.40, # 关键：给"武+器"粘连大块放行
     return_mask=True,

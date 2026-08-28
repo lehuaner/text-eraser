@@ -29,6 +29,8 @@ header {
   padding: 22px 32px;
   border-bottom: 1px solid var(--border);
   background: linear-gradient(180deg, var(--bg-2), var(--bg));
+  position: relative;
+  z-index: 60;
 }
 
 .brand {
@@ -214,11 +216,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
   border: 1px solid var(--border);
 }
 
+/* ---- 高级参数：固定折叠区（展开时把按钮往下推，不再浮层遮挡） ---- */
 .advanced {
   position: relative;
+  width: 100%;            /* 独占一行，展开后自然占据空间，不覆盖后续按钮 */
 }
 .advanced summary {
   cursor: pointer;
+  display: inline-block;
   padding: 9px 14px;
   border-radius: 8px;
   background: var(--bg-3);
@@ -228,18 +233,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .advanced summary:hover { background: var(--border); }
 
 .adv-grid {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 10;
+  position: static;        /* 关键：去掉 absolute，避免遮挡后面的按钮 */
+  margin-top: 8px;
   background: var(--bg-3);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 14px;
-  min-width: 480px;
+  min-width: 0;
   box-shadow: var(--shadow);
 }
 
@@ -288,22 +291,58 @@ footer {
   padding: 28px 0 14px;
 }
 
-/* ---- 历史面板 ---- */
+/* ---- 历史面板 → 固定左侧侧边栏（常驻，展开时主内容向右让位） ---- */
 .hist-panel {
-  margin-top: 16px;
-  padding: 12px 14px;
+  position: fixed;
+  top: 72px;                 /* 紧贴 header 之下 */
+  left: 0;
+  bottom: 0;
+  width: 340px;
+  z-index: 50;
+  margin: 0;
+  padding: 0;
   background: var(--bg-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: none;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(-100%);
+  transition: transform 0.22s ease;
+  box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+}
+
+body.sb-open .hist-panel {
+  transform: translateX(0);
+}
+
+/* 侧边栏展开时，主内容向右让位（不再被遮挡） */
+body.sb-open main {
+  margin-left: 340px;
+  margin-right: auto;
+}
+
+@media (max-width: 640px) {
+  .hist-panel { width: 84vw; }
+  body.sb-open main { margin-left: 84vw; }
 }
 
 .hist-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
   font-size: 13px;
   color: var(--fg-dim);
+}
+
+.hist-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--fg);
+  letter-spacing: 0.4px;
 }
 
 .hist-head .run-btn { margin-left: auto; }
@@ -316,18 +355,27 @@ footer {
 
 .hist-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  grid-template-columns: 1fr 1fr;   /* 历史记录两列布局 */
+  align-items: stretch;             /* 关键：同行两卡等高，右列高图不再延伸到下方重叠左列 */
+  align-content: start;
   gap: 10px;
-  max-height: 280px;
-  overflow-y: auto;
+  padding: 12px 14px;
+  overflow-y: auto;                 /* 内容超出时滚动 */
+  flex: 1 1 0;                      /* basis=0 强制从 0 增长，真正只占 panel 剩余高度 */
+  min-height: 0;                    /* 关键：让固定高度 flex 容器内可滚动 */
 }
 
 .hist-item {
+  position: relative;
   cursor: pointer;
   border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: var(--bg-3);
+  min-width: 0;                  /* 关键：允许 grid 列收缩到列宽，避免图片固有宽度撑破两列重叠 */
+  min-height: 110px;             /* 同行等高时小图卡也有合理高度，不至于太矮 */
+  display: flex;                 /* 卡内纵向排列：图片占满，meta 贴底 */
+  flex-direction: column;
   transition: border-color 0.15s, transform 0.15s;
 }
 
@@ -337,9 +385,12 @@ footer {
 
 .hist-item img {
   width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  max-width: 100%;
+  max-height: 100%;                 /* 等高卡内不溢出，保留原始比例 */
+  flex: 1 1 auto;                   /* 在 flex column 卡内占满除 meta 外的空间 */
+  min-height: 0;                    /* 允许 flex item 收缩到 0 */
   display: block;
+  object-fit: contain;              /* 等比缩放居中，留边不裁切（保留原始比例） */
   background: #101014;
 }
 
@@ -350,9 +401,17 @@ footer {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 0 0 auto;                   /* meta 固定在卡底 */
 }
 
-.hist-note { margin-top: 8px; font-size: 12px; color: var(--fg-dim); }
+.hist-note {
+  flex: 0 0 auto;
+  margin-top: 0;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-dim);
+}
 
 .hist-note.busy { color: var(--accent); }
 .hist-note.ok { color: var(--accent-2); }
@@ -369,4 +428,102 @@ footer {
 .download-btn.small:hover {
   background: var(--bg-3);
   border-color: var(--accent);
+}
+
+/* ---- 历史记录删除按钮（悬停显示） ---- */
+.hist-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  line-height: 18px;
+  padding: 0;
+  font-size: 12px;
+  text-align: center;
+  background: rgba(20, 20, 24, 0.72);
+  color: var(--danger);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+}
+.hist-item:hover .hist-del { opacity: 1; }
+.hist-del:hover { background: var(--danger); color: #fff; }
+
+/* ---- 可拖拽 / 可缩放的图片浮层查看器 ---- */
+.viewer {
+  position: fixed;
+  z-index: 1000;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 94vw;
+}
+.viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg-3);
+  border-bottom: 1px solid var(--border);
+  border-radius: 10px 10px 0 0;
+  cursor: move;
+  user-select: none;
+}
+.viewer-title {
+  flex: 1;
+  font-size: 12px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viewer-btn {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.viewer-btn:hover { background: var(--border); }
+.viewer-body {
+  overflow: auto;
+  max-height: 82vh;
+  padding: 8px;
+  background: var(--bg);
+  background-image:
+    linear-gradient(45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--bg-2) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--bg-2) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--bg-2) 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+}
+.viewer-body img {
+  display: block;
+  transform-origin: top left;
+}
+
+/* ---- 擦除按钮：右下角可拖拽浮层（FAB） ---- */
+.fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 200;
+  cursor: grab;
+  user-select: none;
+}
+.fab:active { cursor: grabbing; }
+.fab .run-btn {
+  padding: 14px 22px;
+  font-size: 15px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
 }

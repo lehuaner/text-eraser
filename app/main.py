@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import shutil
 import time
 from pathlib import Path
 
@@ -205,16 +206,28 @@ async def history_orig(hid: str):
                     media_type="image/png" if p.name.endswith(("png", "bin")) else "application/octet-stream")
 
 
+@app.delete("/api/history/{hid}")
+async def history_delete(hid: str):
+    """删除单条历史记录（含原图、缩略图、元信息目录）。"""
+    p = HISTORY_DIR / hid
+    if not p.is_dir():
+        raise HTTPException(404, "历史记录不存在")
+    try:
+        shutil.rmtree(p)
+    except Exception as e:
+        raise HTTPException(500, f"删除失败: {e}")
+    return JSONResponse({"ok": True, "id": hid})
+
+
 @app.post("/api/erase")
 async def erase(
     image: UploadFile = File(...),
     q_off: float = Form(55.0),
-    mask_pad: int = Form(2),
+    edge: int = Form(1),
     max_area_ratio: float = Form(0.40),
     max_box_ratio: float = Form(0.40),
     direction: float = Form(None),
     edge_aware: bool = Form(False),
-    edge_extend: int = Form(1),
     return_overlay: bool = Form(True),
     glow_mode: str = Form("auto"),
     deglow_strength: float = Form(1.0),
@@ -224,6 +237,8 @@ async def erase(
     deglow_protect: float = Form(1.0),
     deglow_mask_soft: float = Form(0.0),
     deglow_scheme: str = Form("channel"),
+    fill_white: bool = Form(True),
+    fill_max_dist: int = Form(12),
 ):
     """擦除上传图片中的文字。返回 JSON:
         {
@@ -254,13 +269,12 @@ async def erase(
     try:
         result, mask, meta = erase_text(
             rgb,
-            mask_pad=mask_pad,
+            edge=edge,
             q_off=q_off,
             max_area_ratio=max_area_ratio,
             max_box_ratio=max_box_ratio,
             direction=direction,
             edge_aware=edge_aware,
-            edge_extend=edge_extend,
             glow_mode=glow_mode,
             deglow_strength=deglow_strength,
             deglow_green_thr=deglow_green_thr,
@@ -269,6 +283,8 @@ async def erase(
             deglow_protect=deglow_protect,
             deglow_mask_soft=deglow_mask_soft,
             deglow_scheme=deglow_scheme,
+            fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
             return_mask=True,
         )
     except Exception as e:
@@ -297,6 +313,8 @@ async def erase(
             "deglow_glo": deglow_glo,
             "deglow_protect": deglow_protect,
             "deglow_mask_soft": deglow_mask_soft,
+            "fill_white": fill_white,
+            "fill_max_dist": fill_max_dist,
         },
     }
 
@@ -343,14 +361,16 @@ async def erase(
     # 持久化到历史: 原图(原始字节) + 元信息, 供前端历史/轮询复用
     try:
         hid = _save_history(raw, pil, meta, data, {
-            "mask_pad": mask_pad, "q_off": q_off,
+            "edge": edge, "q_off": q_off,
             "max_area_ratio": max_area_ratio, "max_box_ratio": max_box_ratio,
             "direction": direction, "edge_aware": edge_aware,
-            "edge_extend": edge_extend, "glow_mode": glow_mode,
+            "glow_mode": glow_mode,
             "deglow_strength": deglow_strength, "deglow_green_thr": deglow_green_thr,
             "deglow_range": deglow_range, "deglow_glo": deglow_glo,
             "deglow_protect": deglow_protect, "deglow_mask_soft": deglow_mask_soft,
             "deglow_scheme": deglow_scheme,
+            "fill_white": fill_white,
+            "fill_max_dist": fill_max_dist,
         })
         data["history_id"] = hid
     except Exception:

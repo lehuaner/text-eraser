@@ -429,7 +429,7 @@ def _detect_text_mask_classic(raw, boxes=None, strength=DEFAULTS["strength"],
 
 def _fill_nearby_white(rgb: np.ndarray, mask: np.ndarray,
                        pad: int = 6, min_lum: int = 200,
-                       rounds: int = 5, max_dist: int = 32,
+                       rounds: int = 5, max_dist: int = 12,
                        aa_lum: int = 185, aa_dist: int = 3,
                        aa_tail_lum: int = 145, aa_tail_rounds: int = 6) -> np.ndarray:
     """把**紧邻蒙版**的高亮像素并入蒙版。
@@ -826,7 +826,9 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
                      min_area: int = 30, max_area_ratio: float = 0.05,
                      max_box_ratio: float = 0.40,
                      max_side: int = 960, work_max: int = 1280,
-                     q_off: float = 50.0, tint_fill: bool = True):
+                     q_off: float = 50.0, tint_fill: bool = True,
+                     fill_white: bool = True,
+                     fill_max_dist: int = 12):
     """
     文字「边缘蒙版」检测：返回 (mask, boxes)。
 
@@ -843,6 +845,12 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
         框内 Otsu 取文字侧(少数侧)+1px 桥接+低对比度防护(_detect_text_mask_classic)；
         再对蒙版邻域内的高亮纯白像素补全(_fill_nearby_white) —— 修复描边字
         (白字身+灰/红描边)上 Otsu 只取一侧导致的漏白，且不会把背景灰块圈进来；
+        fill_white=False 时跳过该步，蒙版回到纯 Otsu(近似早期 eoff 行为)，
+        小张图的非文字浅色区/衣物高光不再被误锁进填充蒙版；
+        fill_max_dist 控制「孤立纯白段」步骤的最大距离(默认 12px)。
+        字符白边/AA 通常 <8px(由 ④ AA 尾部外推兜住),12 足够;
+        原默认 32 会在"暗背景+亮光斑/光效"图上把远处光斑误锁为填充蒙版
+        (换装.png 实测顶部 31px 远的光斑被吞 497px),需要更收敛。
         再做背景相对亮度补全(_fill_bright_near_mask) —— 兜住发光文字较暗的笔画尾；
         最后沿红/绿色偏像素区域生长(_grow_color_tint, tint_fill=True 时)——
         吞并红蒙版叠加区/淡绿光晕区，修复亮度法吃不到的半透明色偏文字。
@@ -870,7 +878,10 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
         return np.zeros((H, W), np.uint8), []
 
     # 3) 临近纯白补全：只补紧邻蒙版的亮白像素, 不进背景
-    mask = _fill_nearby_white(rgb, mask)
+    #    fill_white=False 跳过此步 → 蒙版回到纯 Otsu(早期 eoff 行为),
+    #    小张图非文字浅色区/衣物高光不再被误锁进填充蒙版。
+    if fill_white:
+        mask = _fill_nearby_white(rgb, mask, max_dist=fill_max_dist)
     # 4) 色偏区域生长：吞并紧邻蒙版的整片红/绿色偏覆盖区(红蒙版叠加/淡绿光晕)
     if tint_fill:
         mask = _grow_color_tint(rgb, mask)
