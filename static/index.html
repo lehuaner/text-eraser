@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Text Eraser — 文字擦除</title>
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
 <header>
@@ -91,9 +91,9 @@
           <label>白段最大距离<small>(亮白补全时吞并远处纯白像素的距离上限,px；0=只走连通+AA尾部；典型白边/AA<8px,默认 12 够用;调到 32 会误吞远处光斑/亮背景)</small>
             <input type="number" id="fillMaxDist" min="0" max="64" step="1" value="12">
           </label>
-          <label class="checkbox">
+          <label class="checkbox-inline">
             <input type="checkbox" id="deglowEnabled" checked>
-            开启去发光<small>(当前算法: v2 减绿度去发光 → 非高亮算法去字; 关掉→普通去字)</small>
+            开启去发光<small>(v2 减绿度去发光 → 去字; 关=普通去字)</small>
           </label>
           <label>去发光强度<small>(0=不去色, 1=完全去除)</small>
             <input type="number" id="deglowStrength" min="0" max="1" step="0.05" value="1">
@@ -130,6 +130,6 @@
   <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
 </div>
 
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=2"></script>
 </body>
 </html>

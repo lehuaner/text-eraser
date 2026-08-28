@@ -256,6 +256,22 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .adv-grid label small { font-size: 11px; }
 
+/* 复选框类参数统一：勾选框在左、文字在右同一行，不随 column 布局居中/拉宽 */
+.adv-grid label:has(> input[type="checkbox"]),
+.adv-grid label.chk,
+.adv-grid label.checkbox-inline {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+}
+.adv-grid label:has(> input[type="checkbox"]) input,
+.adv-grid label.chk input,
+.adv-grid label.checkbox-inline input {
+  width: auto;
+  flex: none;
+}
+
 .adv-grid input,
 .adv-grid select {
   background: var(--bg);

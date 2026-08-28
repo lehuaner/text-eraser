@@ -879,6 +879,42 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
+    # 5) 环带残迹中和: 纯减绿对两类发光区会留下病态残迹 ——
+    #      · 暖绿(R>B, 如黄绿光晕): R/B 通道不动, 去绿后露红/橙(视觉显红);
+    #      · 暗绿(G 明显主导但 R/B 本底暗): 减绿后亮度跌到背景之下(视觉显黑)。
+    #    对 zone 内、文字保护圈外的像素, 若亮度明显低于背景 或 明显偏暖(R−B 大),
+    #    按偏离程度向背景色温和靠拢; 中性且亮度接近背景的像素 t≈0 不动(纹理保留)。
+    protect2 = cv2.dilate(text_stroke.astype(np.uint8), k3, iterations=2) > 0
+    ring = zone & ~protect2
+    if ring.any():
+        ng2 = ~zone
+        bthr = float(np.percentile(gray[ng2], 40)) if ng2.any() else bg_lum
+        bg_msk2 = ng2 & (gray < max(bthr, 70))
+        bg_col = rgb[bg_msk2].mean(0).astype(np.float32) if bg_msk2.any() \
+            else np.array([bg_lum] * 3, np.float32)
+        rr = out[ring, 0].astype(np.float32)
+        gg = out[ring, 1].astype(np.float32)
+        bb = out[ring, 2].astype(np.float32)
+        lum_r = 0.299 * rr + 0.587 * gg + 0.114 * bb
+        t_dark = np.clip((bg_lum - lum_r) / 14.0, 0.0, 1.0)   # 比背景越暗越补
+        t_warm = np.clip((rr - bb - 10.0) / 20.0, 0.0, 1.0)   # 越暖(红>蓝)越中和
+        t = np.clip(np.maximum(t_dark, t_warm) * 0.8, 0.0, 1.0)
+        # 展开成整图掩码再写(链式高级索引写不进副本, 必须用整图布尔掩码)
+        tmap = np.zeros(zone.shape, np.float32)
+        tmap[ring] = t
+        sel3 = tmap > 0.02
+        if sel3.any():
+            rw = out[sel3, 0].astype(np.float32)
+            gw2 = out[sel3, 1].astype(np.float32)
+            bw = out[sel3, 2].astype(np.float32)
+            tw = tmap[sel3]
+            out[sel3, 0] = np.clip(rw * (1 - tw) + bg_col[0] * tw,
+                                   0, 255).astype(np.int16)
+            out[sel3, 1] = np.clip(gw2 * (1 - tw) + bg_col[1] * tw,
+                                   0, 255).astype(np.int16)
+            out[sel3, 2] = np.clip(bw * (1 - tw) + bg_col[2] * tw,
+                                   0, 255).astype(np.int16)
+
     # 文字笔画约束到「真正的强绿区」附近(dilate(strong_green)), 避免吞远处亮背景。
     _k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
     text_stroke_z = text_stroke & (cv2.dilate(strong_green.astype(np.uint8), _k8) > 0)
