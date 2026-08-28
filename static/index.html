@@ -61,6 +61,13 @@
           <label>移动边缘<small>(≈PS 选区扩展/收缩, 正=扩, 负=缩, 0=只取Otsu字形, 1=默认)</small>
             <input type="number" id="edge" min="-5" max="20" step="1" value="1">
           </label>
+          <label class="chk">
+            <input type="checkbox" id="autoEdge"> 自动移动边缘
+            <small>(按需+1, 最多到「自动最大」；纹理损伤最小)</small>
+          </label>
+          <label>自动最大移动边缘<small>(上限, 默认2)</small>
+            <input type="number" id="autoMaxEdge" min="1" max="4" step="1" value="2">
+          </label>
           <label>q_off<small>(蒙版紧密度 30~70, 55=兼顾深浅字)</small>
             <input type="number" id="qOff" min="30" max="70" step="1" value="55">
           </label>

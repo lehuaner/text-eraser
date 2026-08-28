@@ -53,7 +53,7 @@ def _edge_aware_grow(rgb: np.ndarray, mask_filled: np.ndarray) -> np.ndarray:
     return grown
 
 
-def erase_text(
+def _erase_once(
     rgb: np.ndarray,
     *,
     edge: int = 1,
@@ -227,6 +227,132 @@ def erase_text(
                      edge_aware=edge_aware,
                      return_mask=return_mask, t0=t0, sample_exclude=sample_exclude,
                      soft_expand=msoft)
+
+
+def erase_text(
+    rgb: np.ndarray,
+    *,
+    edge: int = 1,
+    auto_edge: bool = False,
+    auto_max_edge: int = 2,
+    q_off: float = 55.0,
+    max_area_ratio: float = 0.40,
+    max_box_ratio: float = 0.40,
+    ml_max_side: int = 960,
+    direction: float | None = None,
+    edge_aware: bool = False,
+    return_mask: bool = False,
+    tint_fill: bool = True,
+    fill_white: bool = True,
+    fill_max_dist: int = 12,
+    glow_mode: str = "auto",
+    deglow_strength: float = 1.0,
+    deglow_green_thr: float = 6.0,
+    deglow_range: int = 24,
+    deglow_glo: float = 85.0,
+    deglow_protect: float = 1.0,
+    deglow_mask_soft: float = 0.0,
+    deglow_scheme: str = "channel",
+):
+    """文字擦除入口。
+
+    auto_edge=True 时，先按原图文字蒙版外围的「文字色残留」逐环判定所需的最小
+    移动边缘 edge（默认从 ``edge`` 起，至多 ``auto_max_edge``），再走普通管线。
+    判定依据：若蒙版外第 (e+1) 环仍含显著文字色/抗锯齿边（肉眼会看成鬼影），
+    则 e+1；否则保持。这样「大多数图默认 1、少数硬图自动到 2」，且纹理损伤最小。
+    返回的 meta 含 ``auto_edge`` / ``edge_used`` 便于前端标注实际使用的 edge。
+    """
+    if auto_edge:
+        return _erase_auto(
+            rgb, edge=edge, auto_max_edge=auto_max_edge,
+            q_off=q_off, max_area_ratio=max_area_ratio,
+            max_box_ratio=max_box_ratio, ml_max_side=ml_max_side,
+            direction=direction, edge_aware=edge_aware,
+            return_mask=return_mask, tint_fill=tint_fill,
+            fill_white=fill_white, fill_max_dist=fill_max_dist,
+            glow_mode=glow_mode, deglow_strength=deglow_strength,
+            deglow_green_thr=deglow_green_thr, deglow_range=deglow_range,
+            deglow_glo=deglow_glo, deglow_protect=deglow_protect,
+            deglow_mask_soft=deglow_mask_soft, deglow_scheme=deglow_scheme)
+    return _erase_once(
+        rgb, edge=edge, q_off=q_off, max_area_ratio=max_area_ratio,
+        max_box_ratio=max_box_ratio, ml_max_side=ml_max_side,
+        direction=direction, edge_aware=edge_aware,
+        return_mask=return_mask, tint_fill=tint_fill,
+        fill_white=fill_white, fill_max_dist=fill_max_dist,
+        glow_mode=glow_mode, deglow_strength=deglow_strength,
+        deglow_green_thr=deglow_green_thr, deglow_range=deglow_range,
+        deglow_glo=deglow_glo, deglow_protect=deglow_protect,
+        deglow_mask_soft=deglow_mask_soft, deglow_scheme=deglow_scheme)
+
+
+def _erase_auto(rgb, *, edge, auto_max_edge, return_mask, **kw):
+    """auto_edge 内部：先判定实际 edge，再走 _erase_once，并在 meta 标注。"""
+    det_kw = dict(
+        method="ml", q_off=kw["q_off"],
+        max_area_ratio=kw["max_area_ratio"], max_box_ratio=kw["max_box_ratio"],
+        max_side=kw["ml_max_side"], tint_fill=kw["tint_fill"],
+        fill_white=kw["fill_white"], fill_max_dist=kw["fill_max_dist"])
+    tmask, _ = detect_text_mask(rgb, **det_kw)
+    chosen = edge
+    if tmask.any():
+        chosen = _decide_edge(rgb, tmask, preferred=edge, max_edge=auto_max_edge)
+    if return_mask:
+        result, mask_filled, meta = _erase_once(rgb, edge=chosen, return_mask=True, **kw)
+    else:
+        result, meta = _erase_once(rgb, edge=chosen, return_mask=False, **kw)
+    meta["auto_edge"] = True
+    meta["edge_used"] = chosen
+    if return_mask:
+        return result, mask_filled, meta
+    return result, meta
+
+
+def _decide_edge(rgb, mask, *, preferred: int = 1, max_edge: int = 2) -> int:
+    """从 ``preferred`` 起，若蒙版外第 (e+1) 环仍含显著文字色/抗锯齿边则 e+1，
+    至多 ``max_edge``。返回最终选用的最小 edge。
+    """
+    if not mask.any():
+        return preferred
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    text_lab = lab[mask > 0].mean(0)
+    far = cv2.dilate(mask, _ellipse(16)) == 0
+    bg_lab = lab[far].mean(0) if far.any() else lab.reshape(-1, 3).mean(0)
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad = np.sqrt(gx ** 2 + gy ** 2)
+    e = int(preferred)
+    while e < int(max_edge):
+        if _ring_dirty(lab, text_lab, bg_lab, grad, mask, radius=e + 1):
+            e += 1
+        else:
+            break
+    return e
+
+
+def _ring_dirty(lab, text_lab, bg_lab, grad, mask, radius: int) -> bool:
+    """蒙版外第 ``radius`` 环是否仍含显著文字色/抗锯齿边（肉眼会看成鬼影）。
+
+    文字色残留 = 该环像素比更接近文字色(而非背景色)且明显偏离背景；
+    配合高梯度(真实笔画边)作为强佐证，二者任一显著即判为「脏」。
+    阈值经 79188(需2, ring2 混色边366/梯度174) 与 6464/6251689(默认1好,
+    ring2 混色边≤13/梯度≤42) 标定：混色边>50 或 梯度>140。
+    """
+    if radius < 1:
+        return False
+    cur = cv2.dilate(mask, _ellipse(radius)) > 0
+    prev = cv2.dilate(mask, _ellipse(radius - 1)) > 0
+    ring = cur & ~prev
+    n = int(ring.sum())
+    if n < 30:
+        return False
+    sub = lab[ring]
+    d_text = np.sqrt(((sub - text_lab) ** 2).sum(1))
+    d_bg = np.sqrt(((sub - bg_lab) ** 2).sum(1))
+    blend = int(((d_text <= d_bg) & (d_bg > 18)).sum())
+    gmean = float(grad[ring].mean())
+    return blend > 50 or gmean > 140
 
 
 def _erase_auto_v11(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,

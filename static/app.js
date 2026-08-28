@@ -23,6 +23,8 @@
   const directionEl = $("direction");
   const edgeAwareEl = $("edgeAware");
   const edgeEl = $("edge");
+  const autoEdgeEl = $("autoEdge");
+  const autoMaxEdgeEl = $("autoMaxEdge");
   const glowModeEl = $("glowMode");
   const deglowStrengthEl = $("deglowStrength");
   const deglowGreenThrEl = $("deglowGreenThr");
@@ -210,6 +212,8 @@
     const form = new FormData();
     form.append("image", file);
     form.append("edge", edgeEl.value);
+    form.append("auto_edge", autoEdgeEl.checked ? "true" : "false");
+    form.append("auto_max_edge", String(parseInt(autoMaxEdgeEl.value, 10) || 2));
     form.append("q_off", qOffEl.value);
     form.append("max_area_ratio", maxAreaRatioEl.value);
     form.append("max_box_ratio", maxBoxRatioEl.value);
@@ -299,8 +303,9 @@
     const cfgTxt = (cfg.glow_mode && cfg.deglow_scheme !== "v4")
       ? ` • 发光[${cfg.glow_mode} 阈值${cfg.deglow_green_thr} 范围${cfg.deglow_range} 亮度${cfg.deglow_glo} 保护${cfg.deglow_protect} 软扩${cfg.deglow_mask_soft} 强度${cfg.deglow_strength}]`
       : "";
+    const autoTxt = d.auto_edge ? ` • 自动移动边缘→${d.edge_used}` : "";
     setStatus(
-      `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${cfgTxt}`,
+      `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${cfgTxt}${autoTxt}`,
       "success"
     );
   }

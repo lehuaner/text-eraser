@@ -239,6 +239,8 @@ async def erase(
     deglow_scheme: str = Form("channel"),
     fill_white: bool = Form(True),
     fill_max_dist: int = Form(12),
+    auto_edge: bool = Form(False),
+    auto_max_edge: int = Form(2),
 ):
     """擦除上传图片中的文字。返回 JSON:
         {
@@ -285,6 +287,8 @@ async def erase(
             deglow_scheme=deglow_scheme,
             fill_white=fill_white,
             fill_max_dist=fill_max_dist,
+            auto_edge=auto_edge,
+            auto_max_edge=auto_max_edge,
             return_mask=True,
         )
     except Exception as e:
@@ -304,6 +308,8 @@ async def erase(
         "boxes": meta.get("boxes", []),
         "orig_size": [W, H],
         "orig_name": image.filename or "image",
+        "edge_used": meta.get("edge_used", edge),
+        "auto_edge": meta.get("auto_edge", False),
         "cfg": {
             "glow_mode": glow_mode,
             "deglow_scheme": deglow_scheme,
@@ -315,6 +321,8 @@ async def erase(
             "deglow_mask_soft": deglow_mask_soft,
             "fill_white": fill_white,
             "fill_max_dist": fill_max_dist,
+            "auto_edge": auto_edge,
+            "auto_max_edge": auto_max_edge,
         },
     }
 
@@ -371,6 +379,8 @@ async def erase(
             "deglow_scheme": deglow_scheme,
             "fill_white": fill_white,
             "fill_max_dist": fill_max_dist,
+            "auto_edge": auto_edge,
+            "auto_max_edge": auto_max_edge,
         })
         data["history_id"] = hid
     except Exception:
