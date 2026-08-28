@@ -335,7 +335,8 @@ def _merge_and_filter(comps, vthr, pad, wH, wW, H, W, scale,
 # ---------------------------------------------------------------------------
 def _detect_text_mask_classic(raw, boxes=None, strength=DEFAULTS["strength"],
                               min_area=DEFAULTS["min_area"],
-                              q_off: float = 50.0):
+                              q_off: float = 50.0,
+                              upscale: bool = True):
     """逐像素文字蒙版（Otsu 双峰分割，类 PS 魔棒精度）。
 
     对每个文字框：
@@ -364,28 +365,24 @@ def _detect_text_mask_classic(raw, boxes=None, strength=DEFAULTS["strength"],
     extra_dilate = int(round((60.0 - float(q_off)) / 10.0))
     extra_dilate = max(0, min(2, extra_dilate))
 
-    pad = 8
-    for b in boxes:
-        x0 = max(0, int(b["x0"]) - pad); y0 = max(0, int(b["y0"]) - pad)
-        x1 = min(W, int(b["x1"]) + pad); y1 = min(H, int(b["y1"]) + pad)
-        if x1 - x0 < 3 or y1 - y0 < 3:
-            continue
-        sub = gray[y0:y1, x0:x1]
-        # 1) Otsu 双峰谷底阈值
-        thr, _ = cv2.threshold(sub, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+    def seg_box(gs):
+        """单框字形分割(Otsu 少数侧 + 桥接/膨胀 + 连通域清理), 返回 gs 形状的
+        0/255 蒙版。gs 可为原尺度或放大后的灰度子图, 门槛随 gs 面积等比。
+        """
+        thr, _ = cv2.threshold(gs, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
         if thr <= 0:
             thr = 1
         if thr >= 255:
             thr = 254
-        below = sub <= thr
+        below = gs <= thr
         above = ~below
         cnt_b = int(below.sum()); cnt_a = int(above.sum())
         if cnt_b == 0 or cnt_a == 0:
-            continue
-        m_b = float(sub[below].mean()); m_a = float(sub[above].mean())
+            return np.zeros_like(gs)
+        m_b = float(gs[below].mean()); m_a = float(gs[above].mean())
         # 3) 低对比度防护(织物/均匀块): 两均值差<20 视为无字形
         if abs(m_b - m_a) < 20:
-            continue
+            return np.zeros_like(gs)
         # 2) 少数侧 = 文字(相等时取更极端侧, 远离 127.5)
         if cnt_b < cnt_a:
             sel = below
@@ -402,7 +399,7 @@ def _detect_text_mask_classic(raw, boxes=None, strength=DEFAULTS["strength"],
             sel = cv2.dilate(sel, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2)),
                              iterations=extra_dilate)
         # 6) 框内连通域清理(放宽下限, 保护小字细笔画)
-        box_area = max(1, (x1 - x0) * (y1 - y0))
+        box_area = max(1, gs.shape[0] * gs.shape[1])
         n, lbl, stats, _ = cv2.connectedComponentsWithStats(sel, connectivity=8)
         min_keep = max(4, int(box_area * 0.001))   # >= 4px, 保小字
         max_keep = int(box_area * 0.85)
@@ -423,6 +420,34 @@ def _detect_text_mask_classic(raw, boxes=None, strength=DEFAULTS["strength"],
             if a_max > int(box_area * 0.12) and w_max > 0 and h_max > 0:
                 if (a_max / float(w_max * h_max)) > 0.70:
                     keep[:] = 0
+        return keep
+
+    pad = 8
+    for b in boxes:
+        x0 = max(0, int(b["x0"]) - pad); y0 = max(0, int(b["y0"]) - pad)
+        x1 = min(W, int(b["x1"]) + pad); y1 = min(H, int(b["y1"]) + pad)
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            continue
+        # 方案A(低分辨率蒙版覆盖): 小字框内先把灰度放大 2~3x 再分割一次, 与
+        # 原尺度结果**取并集**(只增不减) —— 放大后细笔画(1~2px)越过 CC 面积
+        # 下限/长宽比门, 修低清图上被整段误删的撇/钩尾; 原尺度结果保底,
+        # 放大带来的 Otsu 阈值微移不会让蒙版变小。
+        # 判定用「去 pad 后的字形高度」(框已外扩 2*pad), 字符 >56px 时分辨率
+        # 已足够 → 不放大, 普通图/大图零变化。
+        sub = gray[y0:y1, x0:x1]
+        keep = seg_box(sub)
+        h_char = (y1 - y0) - 2 * pad
+        s_fac = 1
+        if upscale and h_char < 56:
+            s_fac = 2 if h_char >= 24 else 3
+        if s_fac > 1:
+            sub_up = cv2.resize(sub, ((x1 - x0) * s_fac, (y1 - y0) * s_fac),
+                                interpolation=cv2.INTER_CUBIC)
+            keep_up = seg_box(sub_up)
+            # 缩回原尺度(细笔画 >127 保留), 并入原尺度结果
+            keep_up = cv2.resize(keep_up, (x1 - x0, y1 - y0),
+                                 interpolation=cv2.INTER_AREA) > 127
+            keep = cv2.bitwise_or(keep, keep_up.astype(np.uint8) * 255)
         mask[y0:y1, x0:x1][keep > 0] = 255
     return mask
 
@@ -478,6 +503,55 @@ def _fill_nearby_white(rgb: np.ndarray, mask: np.ndarray,
                 break
             cur = new
     return cur
+
+
+def _fill_bright_near_mask(rgb: np.ndarray, mask: np.ndarray,
+                           bg_lo: int = 25, lum_off: int = 24,
+                           min_rgb: int = 118, green_gate: int = 26,
+                           rounds: int = 6) -> np.ndarray:
+    """白字亮侧连通补全（方案B）：吃掉文字边缘 1~3px 的浅色残留。
+
+    实测低分辨率白字(如 180px 缩略图上的「新」)在 v2 结果里的「碎块」全部落在
+    距填充蒙版 0~2px、亮度 130~137 的中性灰带 —— 是白字与背景之间的 AA 渐隐
+    环带(1~2px), Otsu 核心蒙版止于 ~255 高亮处, 这条带被切在蒙版外; 低清图
+    上它还连着更淡的光晕残迹, 视觉上像没擦干净/碎块。膨胀只能包围已有种子,
+    对整条环带无效; 这里从蒙版出发, 沿「比背景亮 lum_off+ 且 近白」像素连通
+    生长 ≤rounds 轮(默认 6px, 覆盖 1~3px 环带 + 少量余量, 不扫远处大块), 把
+    环带并入填充蒙版, 由 patch_fill 一并抹平。
+
+    近白门限 = min(R,G,B) ≥ min_rgb 且 绿度 G−max(R,B) < green_gate：
+      - 环带本身是中性的(实测 (130,130,130)) → 天然满足；
+      - 挡掉「去完发光的暗光晕」——v2 减绿度后光晕 G 被减到 max(R,B) 附近,
+        但 R/B 本底暗 → min_rgb 不够(多为 60~120 的暗棕/暗灰), 亮度也不够；
+      - 挡掉强绿光晕(原始图上绿度 ≥green_gate 不进)与灰色大背景块。
+    局部背景 = 蒙版外像素亮度 bg_lo 分位——光晕等亮区集中在高分位，低分位≈
+    真实背景，阈值随背景自适应(暗背景自动放宽、亮背景自动收紧)。
+    仅在去完发光的干净图上启用(如 v2 路径在并集蒙版上调用)：原始图的亮绿光晕
+    会被绿度门放行一部分, 因此不在原图上跑。
+    """
+    if not mask.any():
+        return mask
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    outside = (mask == 0)
+    bg = float(np.percentile(gray[outside], bg_lo)) if outside.sum() > 0 else 90.0
+    r = rgb[..., 0].astype(np.int16)
+    g = rgb[..., 1].astype(np.int16)
+    b = rgb[..., 2].astype(np.int16)
+    min_rgb_im = np.minimum(np.minimum(r, g), b)
+    cand = ((gray > (bg + lum_off)) &
+            (min_rgb_im >= min_rgb) &
+            ((g - np.maximum(r, b)) < green_gate))
+    if cand.any():
+        cur = (mask > 0).astype(np.uint8)
+        k3 = np.ones((3, 3), np.uint8)
+        for _ in range(rounds):
+            dil = cv2.dilate(cur, k3) > 0
+            add = dil & cand & (cur == 0)
+            if not add.any():
+                break
+            cur[add] = 1
+        return np.where(cur > 0, 255, 0).astype(np.uint8)
+    return mask
 
 
 def _grow_color_tint(rgb: np.ndarray, mask: np.ndarray,
@@ -717,13 +791,14 @@ def _deglow_full_green(rgb: np.ndarray, tmask: np.ndarray,
 
 
 def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
-                          g_thr: int = 2, g_lo: int = 70,
+                          g_thr: int = 2, g_lo: int = 60,
                           min_strong: int = 30,
                           white_floor: int = 120,
                           rounds_max: int = 400,
                           strength: float = 1.0,
                           alpha_core: float = 0.65,
                           zone_ratio: float = 0.6,
+                          zone_expand: int = 24,
                           debug: bool = False) -> tuple:
     """原型 v2：发光区用「真·alpha 分解」恢复底层纹理，mask 只收紧到高α核心+文字。
 
@@ -740,7 +815,9 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     r = rgb[..., 0].astype(np.int16)
     g = rgb[..., 1].astype(np.int16)
     b = rgb[..., 2].astype(np.int16)
-    s = float(np.clip(strength, 0.0, 1.0))
+    # 允许略过冲(>1)以彻底去净淡绿残迹: 被保护文字(text_stroke)外才可能减到略暖灰,
+    # 不会变蓝/变黑(减绿度天然稳定); 上限 1.5 防止彩色翻转。
+    s = float(np.clip(strength, 0.0, 1.5))
     H, W = rgb.shape[:2]
     empty = np.zeros((H, W), np.uint8)
     if s <= 0:
@@ -748,7 +825,8 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
 
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     green = (g - np.maximum(r, b) > g_thr) & (g > g_lo)
-    strong_green = (g - np.maximum(r, b) > 15) & (g > 100)
+    # 种子放宽: 淡绿边缘(g-max 仅 4~14)也算强绿 → 让连通生长更靠近浅光外缘
+    strong_green = (g - np.maximum(r, b) > 8) & (g > 95)
     if int(strong_green.sum()) < min_strong:        # 无强发光 → 普通图, 零改动
         return rgb, empty
 
@@ -756,12 +834,15 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     min_rgb = np.minimum(np.minimum(r, g), b)
     text_stroke = (min_rgb > white_floor) & ((g - np.maximum(r, b)) < 40)
 
-    # 从文字蒙版/强绿像素沿「绿 | 比背景亮」自适应生长出整片发光区(非写死范围)
+    # 从文字蒙版/强绿像素沿「绿 | 比背景亮 | 淡绿」自适应生长出整片发光区(非写死范围)
     # 以强绿像素播种: 即使强发光图文字检测失败(tmask 空), 发光区也能被覆盖。
+    # bright/faint_green 阈值放宽: 接近背景亮度、g-max 仅 3~8 的浅光边缘也纳入,
+    # 修正「发光检测范围没盖住边缘浅光」(生长前沿原在亮-暗交界处即停)。
     bg_cand = gray[~strong_green]
     bg_lum = float(np.median(bg_cand)) if bg_cand.size else 80.0
-    bright = (gray > (bg_lum + 10)) & (gray > 70)
-    grow_cond = green | bright
+    bright = (gray > (bg_lum + 6)) & (gray > 55)
+    faint_green = (g - np.maximum(r, b) > 3) & (g > 55)
+    grow_cond = green | bright | faint_green
     zone = (strong_green | (tmask > 0)).copy()
     cur = zone
     budget = int(H * W * zone_ratio)
@@ -777,18 +858,26 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
             break
         cur = zone
 
+    # 检测范围外扩 zone_expand(px)：把「连通生长未触及的极淡光晕外缘」也纳入去绿，
+    # 修正「发光检测范围缺了一点」的问题。非发光区绿度≈0，减绿无副作用(安全)。
+    if zone_expand > 0:
+        _ze = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (zone_expand * 2 + 1, zone_expand * 2 + 1))
+        zone = cv2.dilate(zone.astype(np.uint8), _ze) > 0
+
     # 按"绿度"(G−max(R,B))从 G 通道减去绿光, 直接去发光:
     #   发光物理 ≈ 在背景上叠加绿光 → I 的 G 通道高出 R/B 的部分就是叠加的绿光
     #   去发光 = G' = G − greenness → G' 接近 max(R,B) → 中性灰(原背景色)
     # R/B 通道保持 → 底层纹理完整保留；只减 G 通道 → 不可能减到黑, 数值天然稳定。
     # 强度 strength 控制去绿力度(1=完全去绿, <1=保留少量绿光晕)。
-    m_zone = zone & ~text_stroke
+    # 去绿区 = 整片发光区(含白字本体): 白字身上的淡绿铸色一并去除(只减 G 通道,
+    # 白字仍近白可检), 视觉上不再残留「文字边缘那圈绿」(用户反馈"外围还剩一点")。
+    m_zone = zone
     if not m_zone.any():
         return rgb, (tmask > 0).astype(np.uint8)
     greenness = np.maximum(g.astype(np.int16) - np.maximum(r, b), 0)  # 绿度, 非负
-    if m_zone.any():
-        Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
-        out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
+    Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
+    out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
     # 文字笔画约束到「真正的强绿区」附近(dilate(strong_green)), 避免吞远处亮背景。
     _k8 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
@@ -917,7 +1006,9 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
                      max_side: int = 960, work_max: int = 1280,
                      q_off: float = 50.0, tint_fill: bool = True,
                      fill_white: bool = True,
-                     fill_max_dist: int = 12):
+                     fill_max_dist: int = 12,
+                     upscale: bool = True,
+                     bright_bridge: bool = False):
     """
     文字「边缘蒙版」检测：返回 (mask, boxes)。
 
@@ -940,7 +1031,10 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
         字符白边/AA 通常 <8px(由 ④ AA 尾部外推兜住),12 足够;
         原默认 32 会在"暗背景+亮光斑/光效"图上把远处光斑误锁为填充蒙版
         (换装.png 实测顶部 31px 远的光斑被吞 497px),需要更收敛。
-        再做背景相对亮度补全(_fill_bright_near_mask) —— 兜住发光文字较暗的笔画尾；
+        upscale=True(默认): 小字框(高度<48px)内先放大 2~3x 再 Otsu/连通域,
+        找回低分辨率下被面积下限/长宽比门误删的细笔画(方案A)；
+        bright_bridge=True: 沿「比背景亮+近白」像素从蒙版连通生长, 兜住被
+        Otsu 切掉的白字细笔画段(_fill_bright_near_mask, 方案B, 默认关)；
         最后沿红/绿色偏像素区域生长(_grow_color_tint, tint_fill=True 时)——
         吞并红蒙版叠加区/淡绿光晕区，修复亮度法吃不到的半透明色偏文字。
 
@@ -960,9 +1054,11 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
     if not boxes:
         return np.zeros((H, W), np.uint8), []
 
-    # 2) 精细字形蒙版(亮度+强边)
+    # 2) 精细字形蒙版(亮度+强边)。upscale: 小字框自动放大分割, 补低分辨率
+    #    细笔画被 CC 下限误删的缺口(方案A)
     mask = _detect_text_mask_classic(rgb, boxes=boxes, strength=strength,
-                                    min_area=min_area, q_off=q_off)
+                                    min_area=min_area, q_off=q_off,
+                                    upscale=upscale)
     if not mask.any():
         return np.zeros((H, W), np.uint8), []
 
@@ -974,6 +1070,11 @@ def detect_text_mask(raw, strength: float = 1.0, method: str = "ml",
     # 4) 色偏区域生长：吞并紧邻蒙版的整片红/绿色偏覆盖区(红蒙版叠加/淡绿光晕)
     if tint_fill:
         mask = _grow_color_tint(rgb, mask)
+    # 4b) 白字亮侧连通补全(方案B): 沿「比背景亮+近白」像素从蒙版连通生长,
+    #     找回低分辨率下被 Otsu 切掉的白字细笔画段。默认关(不改变现有方案);
+    #     v2 等「先去发光再去字」路径在干净图上启用(亮光晕已减绿变暗, 不会被吞)
+    if bright_bridge:
+        mask = _fill_bright_near_mask(rgb, mask)
     mask = _clean_text_mask(mask, H, W, min_area=min(
         min_area, 8), max_area_ratio=0.9)
     return mask, _mask_to_boxes(mask)

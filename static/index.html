@@ -91,38 +91,18 @@
           <label>白段最大距离<small>(亮白补全时吞并远处纯白像素的距离上限,px；0=只走连通+AA尾部；典型白边/AA<8px,默认 12 够用;调到 32 会误吞远处光斑/亮背景)</small>
             <input type="number" id="fillMaxDist" min="0" max="64" step="1" value="12">
           </label>
-          <label>发光处理<small>(白字+绿光晕 / 红蒙版叠加)</small>
-            <select id="glowMode">
-              <option value="auto">auto · A+B混合(推荐)</option>
-              <option value="autov1.1">autov1.1 · 范围补齐(保守)</option>
-              <option value="deglow_first">deglow_first · 先去发光再去字(实验)</option>
-              <option value="off">off · 关闭发光处理</option>
-            </select>
+          <label class="checkbox">
+            <input type="checkbox" id="deglowEnabled" checked>
+            开启去发光<small>(当前算法: v2 减绿度去发光 → 非高亮算法去字; 关掉→普通去字)</small>
           </label>
           <label>去发光强度<small>(0=不去色, 1=完全去除)</small>
             <input type="number" id="deglowStrength" min="0" max="1" step="0.05" value="1">
           </label>
-          <label>绿检出阈值<small>(g−max(R,B)超过即视为光晕, 越小越灵敏, 默认6)</small>
-            <input type="number" id="deglowGreenThr" min="0.5" max="20" step="0.5" value="6">
-          </label>
-          <label>去发光范围<small>(px, 覆盖光晕的半径, 默认24, 溢出时调大到40~60)</small>
-            <input type="number" id="deglowRange" min="0" max="200" step="2" value="24">
-          </label>
-          <label>绿最低亮度<small>(g_lo, 默认85, 溢出时调低到60~70可清更暗的残绿)</small>
-            <input type="number" id="deglowGlo" min="40" max="160" step="5" value="85">
-          </label>
-          <label>白字保护<small>(1=默认保护, 调到0.5~0减少保护多去绿, 可能伤字边)</small>
-            <input type="number" id="deglowProtect" min="0" max="1" step="0.05" value="1">
+          <label>去发光范围外扩<small>(px, 把极淡光晕外缘也纳入去绿, 默认10, 调大覆盖更远残绿)</small>
+            <input type="number" id="deglowZoneExpand" min="0" max="60" step="1" value="10">
           </label>
           <label>蒙版透明度扩展<small>(px, 0=关; 外围半透明填充带, 扩覆盖不毁纹理)</small>
             <input type="number" id="deglowMaskSoft" min="0" max="150" step="1" value="0">
-          </label>
-          <label>去发光方案<small>(算法选择)</small>
-            <select id="deglowScheme">
-              <option value="channel">通道法 · 绿光晕(现有)</option>
-              <option value="v4">通用 v4.1 · 自动辨识(新)</option>
-              <option value="off">off · 关闭去发光</option>
-            </select>
           </label>
         </div>
         <p class="adv-note">可见效果靠「移动边缘」和 q_off；max_*_ratio 只在「检出失败/误杀」时调高。纹理方向用于有主导纹理(岩石条带/木纹)时让填充沿该方向延展。</p>

@@ -25,14 +25,10 @@
   const edgeEl = $("edge");
   const autoEdgeEl = $("autoEdge");
   const autoMaxEdgeEl = $("autoMaxEdge");
-  const glowModeEl = $("glowMode");
+  const deglowEnabledEl = $("deglowEnabled");
   const deglowStrengthEl = $("deglowStrength");
-  const deglowGreenThrEl = $("deglowGreenThr");
-  const deglowRangeEl = $("deglowRange");
-  const deglowGloEl = $("deglowGlo");
-  const deglowProtectEl = $("deglowProtect");
   const deglowMaskSoftEl = $("deglowMaskSoft");
-  const deglowSchemeEl = $("deglowScheme");
+  const deglowZoneExpandEl = $("deglowZoneExpand");
   const fillWhiteEl = $("fillWhite");
   const fillMaxDistEl = $("fillMaxDist");
 
@@ -220,14 +216,11 @@
     const dirVal = directionEl.value.trim();
     if (dirVal !== "") form.append("direction", dirVal);
     form.append("edge_aware", edgeAwareEl.checked ? "true" : "false");
-    form.append("glow_mode", glowModeEl.value);
+    // 去发光：唯一算法 v2（开启开关即 v2, 关闭即全程普通去字）
+    form.append("deglow_scheme", deglowEnabledEl.checked ? "v2" : "off");
     form.append("deglow_strength", deglowStrengthEl.value);
-    form.append("deglow_green_thr", deglowGreenThrEl.value);
-    form.append("deglow_range", deglowRangeEl.value);
-    form.append("deglow_glo", deglowGloEl.value);
-    form.append("deglow_protect", deglowProtectEl.value);
     form.append("deglow_mask_soft", deglowMaskSoftEl.value);
-    form.append("deglow_scheme", deglowSchemeEl.value);
+    form.append("deglow_zone_expand", deglowZoneExpandEl.value);
     form.append("fill_white", fillWhiteEl.checked ? "true" : "false");
     form.append("fill_max_dist", String(parseInt(fillMaxDistEl.value, 10) || 0));
     form.append("return_overlay", "true");
@@ -300,12 +293,12 @@
 
     const boxes = d.boxes || [];
     const cfg = d.cfg || {};
-    const cfgTxt = (cfg.glow_mode && cfg.deglow_scheme !== "v4")
-      ? ` • 发光[${cfg.glow_mode} 阈值${cfg.deglow_green_thr} 范围${cfg.deglow_range} 亮度${cfg.deglow_glo} 保护${cfg.deglow_protect} 软扩${cfg.deglow_mask_soft} 强度${cfg.deglow_strength}]`
-      : "";
+    const glowTxt = (cfg.deglow_scheme === "off")
+      ? " • 去发光[关]"
+      : ` • 去发光[开 强度${cfg.deglow_strength} 外扩${cfg.deglow_zone_expand} 软扩${cfg.deglow_mask_soft}]`;
     const autoTxt = d.auto_edge ? ` • 自动移动边缘→${d.edge_used}` : "";
     setStatus(
-      `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${cfgTxt}${autoTxt}`,
+      `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${glowTxt}${autoTxt}`,
       "success"
     );
   }
