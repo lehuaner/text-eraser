@@ -56,7 +56,7 @@ async def index():
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "ts": int(time.time())}
+    return {"status": "ok", "version": __version__, "ts": int(time.time())}
 
 
 @app.get("/api/example.png")

@@ -17,7 +17,7 @@ from text_eraser.ml_text_select import detect_text_ml, ensure_model, is_model_av
 from text_eraser.patch_fill import inpaint
 from text_eraser.text_select import detect_text, detect_text_mask, to_rgb_uint8
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 __all__ = [
     "erase_text",
