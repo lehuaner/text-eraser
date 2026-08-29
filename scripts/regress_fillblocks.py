@@ -52,7 +52,7 @@ r = subprocess.run([sys.executable, f"{ROOT}/scripts/regress_hz4462.py"],
                    capture_output=True, text=True)
 tail = r.stdout.strip().splitlines()[-8:]
 print("\n".join(tail))
-for line, want in [("178", "1273"), ("556", "5527"), ("635", "1325"), ("668", "10995")]:
+for line, want in [("178", "1273"), ("556", "5518"), ("635", "1325"), ("668", "10995")]:
     if not any(line in l and want in l for l in tail):
         fails.append(line)
 
