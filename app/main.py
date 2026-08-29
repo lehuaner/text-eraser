@@ -244,7 +244,7 @@ async def erase(
     deglow_scheme: str = Form("v2"),
     fill_white: bool = Form(True),
     fill_max_dist: int = Form(12),
-    auto_edge: bool = Form(False),
+    auto_edge: bool = Form(True),
     auto_max_edge: int = Form(2),
 ):
     """擦除上传图片中的文字。返回 JSON:

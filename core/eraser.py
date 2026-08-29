@@ -258,7 +258,7 @@ def erase_text(
     rgb: np.ndarray,
     *,
     edge: int = 1,
-    auto_edge: bool = False,
+    auto_edge: bool = True,
     auto_max_edge: int = 2,
     q_off: float = 55.0,
     max_area_ratio: float = 0.40,
