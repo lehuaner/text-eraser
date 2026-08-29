@@ -13,11 +13,13 @@
 """
 import sys
 import numpy as np
+import cv2
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.text_select import detect_text_mask, _deglow_full_green_v2
+from core.text_select import (detect_text_mask, _deglow_full_green_v2,
+                              _fill_bright_near_mask, _absorb_zone_bright_core)
 from core.eraser import erase_text
 
 try:
@@ -112,6 +114,14 @@ def build(tag):
     mask, boxes = detect_text_mask(clean, method="ml", tint_fill=True,
                                    max_area_ratio=0.40, q_off=55,
                                    fill_white=True, fill_max_dist=12)
+    # 3b) 完整蒙版链路(与 eraser._erase_deglow_v2 一致, 供步骤④⑤展示):
+    #     原图蒙版 ∪ 去发光图蒙版 → 闭运算 → 方案B亮侧补全 → 发光区内亮核吸收
+    #     (吸收步修复 668「新」字被绿晕隔离的孤立笔画部件蒙版漏覆盖)
+    union = ((tmask > 0) | (mask > 0)).astype(np.uint8) * 255
+    union = cv2.morphologyEx(union, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    union = _fill_bright_near_mask(clean, union)
+    union = _absorb_zone_bright_core(clean, rgb, union, dbg["zone"])
+    mask = union
     # 4) 完整擦除(先去发光 → 再去字)取最终结果 + 中间 deglow
     res, m, meta = erase_text(
         rgb, deglow_scheme="v2", glow_mode="auto", deglow_mask_soft=0.0,
