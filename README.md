@@ -1,8 +1,8 @@
 # TextPatch
 
 [![CI](https://github.com/lehuaner/TextPatch/actions/workflows/ci.yml/badge.svg)](https://github.com/lehuaner/TextPatch/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/textpatch)](https://pypi.org/project/textpatch/)
-[![Python](https://img.shields.io/pypi/pyversions/textpatch)](https://pypi.org/project/textpatch/)
+[![PyPI](https://img.shields.io/pypi/v/text-eraser)](https://pypi.org/project/text-eraser/)
+[![Python](https://img.shields.io/pypi/pyversions/text-eraser)](https://pypi.org/project/text-eraser/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **图片文字擦除工具** — DBNet 文字检测 + PatchMatch 内容识别填充，附带去发光（去除绿光/辉光文字的光晕）与本地 Web 界面。
@@ -21,10 +21,12 @@
 ## 安装
 
 ```bash
-pip install textpatch
+pip install text-eraser
 ```
 
 需要 Python 3.10+。DBNet 模型（约 5MB）在首次使用时自动从 HuggingFace 下载，之后离线可用。
+
+> PyPI 发行名为 `text-eraser`（`textpatch` 与既有包名过于相似未获准），Python 导入名是 `textpatch`。
 
 从源码运行：
 
