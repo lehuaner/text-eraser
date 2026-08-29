@@ -82,7 +82,7 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
 | `deglow_scheme` | "v2" | 去发光方案："v2" / "off"（无发光图自动零改动） |
 | `max_side` | 960 | DBNet 推理最长边，调大可提升小字召回 |
 
-完整函数级 API 见 [ALGORITHM.md](ALGORITHM.md)。
+完整函数级 API 见 [docs/ALGORITHM.md](docs/ALGORITHM.md)。
 
 ## 算法概览
 
@@ -94,8 +94,8 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
   → 擦除结果
 ```
 
-- 设计细节与参数速查：[ALGORITHM.md](ALGORITHM.md)
-- 去发光 v4 规格说明：[DEGLOW_V4.md](DEGLOW_V4.md)
+- 设计细节与参数速查：[docs/ALGORITHM.md](docs/ALGORITHM.md)
+- 去发光 v4 规格说明：[docs/DEGLOW_V4.md](docs/DEGLOW_V4.md)
 
 ## 已知限制
 
@@ -108,6 +108,19 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
 ```bash
 pip install -e .[dev]
 pytest                 # 合成图测试套件
+```
+
+```
+TextPatch/
+├── textpatch/          # 包本体 (检测/蒙版/填充/去发光/Web)
+├── tests/              # 合成图测试 (CI 用, 自足不依赖样图)
+├── docs/
+│   ├── ALGORITHM.md    # 函数级算法与参数指南
+│   ├── DEGLOW_V4.md    # 去发光 v4 规格说明
+│   ├── assets/         # README 演示图
+│   └── dev/            # 开发日志与专项修复报告
+├── scripts/            # 离线诊断/回归脚本 (见下)
+└── deglow/             # 去发光 v4 实验模块 (不随 pip 包发布)
 ```
 
 `scripts/` 下还有一套基于真实样图的回归脚本（`regress_*.py`，样图不入库，需本地自备 `data/` 样图），用于算法调参时的逐位回归验证。

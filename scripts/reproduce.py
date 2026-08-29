@@ -1,8 +1,7 @@
 """一键复现 TextPatch 的「武器」擦除效果。
 
-用法（必须用项目根目录的 Python，且 cwd 切到项目根）：
-    cd D:\Code\Project\Python\TextPatch
-    python reproduce.py
+用法（在仓库根目录执行）：
+    python scripts/reproduce.py
 
 输出：
     data/result/repro_result.png   擦除结果
