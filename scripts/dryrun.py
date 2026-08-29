@@ -1,7 +1,7 @@
 """
 离线 dry-run：图片 → 字检 → patch_fill，输出原图/蒙版/结果三图。
 用法：
-    C:/Users/乐幻/AppData/Local/Programs/Python/Python313/python.exe scripts/dryrun.py \
+    python scripts/dryrun.py \
         [--method classic|ml] [--q_off 50] data/needExtractAndPatch.png
 """
 from __future__ import annotations

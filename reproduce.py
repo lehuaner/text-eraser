@@ -2,7 +2,7 @@
 
 用法（必须用项目根目录的 Python，且 cwd 切到项目根）：
     cd D:\Code\Project\Python\TextPatch
-    C:/Users/乐幻/AppData/Local/Programs/Python/Python313/python.exe reproduce.py
+    python reproduce.py
 
 输出：
     data/result/repro_result.png   擦除结果
