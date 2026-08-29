@@ -476,6 +476,28 @@ def _residual_green(rgb: np.ndarray, mask: np.ndarray,
     return green & near
 
 
+def _dark_source_exclude(clean: np.ndarray, mask: np.ndarray,
+                         ring_px: int = 4, band: int = 25):
+    """发光图填充的「暗源剔除」：把比蒙版紧邻上下文暗带下限还暗 band 的像素
+    从取样区剔除，防止 patchmatch 把远处深色斑纹拉进文字区填成黑块。
+
+    背景(556 实测)：去发光后笔画上下文 lum≈74~85，但大块字洞内部锚定弱，
+    patchmatch 从下半部枯枝暗纹(lum 35~55)拉黑斑填进笔画区 → 文字区黑块。
+    参考值取蒙版外 ring_px 环带亮度的 **25 分位**(暗侧)再减 band —— 自校准：
+    亮结构(米黄带)环绕时不会被误剔，深色背景图的合法暗源也不受影响。
+    只在确实发生过去发光的 v2 路径调用；普通路径不受影响。
+
+    Returns: bool mask 或 None(无需剔除)。
+    """
+    L = cv2.cvtColor(clean, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    ring = (cv2.dilate(mask, _ellipse(ring_px)) > 0) & (mask == 0)
+    if not ring.any():
+        return None
+    ref = float(np.percentile(L[ring], 25)) - band
+    out = L < ref
+    return out if out.any() else None
+
+
 def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
               return_mask, t0, sample_exclude=None,
               soft_expand: float = 0.0):
@@ -690,6 +712,15 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
 
     # 填充取样剔除残余绿(未净发光边缘), 防复制进文字区
     sample_exclude = _residual_green(clean, mask)
+    # 暗源剔除: 发光图的文字上下文是「去发光后的背景」, 若取样区里有远暗于
+    # 该上下文的斑纹(枯枝/暗纹), 大块字洞内部锚定弱时会被 patchmatch 拉来
+    # 填成黑块(556 实测: 笔画白芯 lum≈159、上下文 74~85, 填充却成了 35~55)。
+    # 仅在真正发生过去发光(zone 非空)时启用; 换装等无发光图零改动。
+    if zone is not None and bool((zone > 0).any()):
+        _dx = _dark_source_exclude(clean, mask)
+        if _dx is not None:
+            sample_exclude = (_dx | sample_exclude) if sample_exclude is not None \
+                else _dx
     res = _run_fill(clean, mask, boxes, edge=edge, direction=direction,
                     edge_aware=edge_aware,
                     return_mask=return_mask, t0=t0,
