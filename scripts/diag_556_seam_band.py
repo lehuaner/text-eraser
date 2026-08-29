@@ -159,9 +159,27 @@ def instrumented(rgb, tmask, strength=1.0, alpha_core=0.65, zone_ratio=0.6,
                                   B[..., 0] - D_rg - D_gb], axis=-1)
                 np.clip(_init, 0, 255, out=_init)
             _Bh = _harmonic_background(out, zone, init=_init)
-            if _Bh is not None:
-                B = _Bh
-                cap["B_harmonic"] = True
+            if _Bh is not None and D_rg is not None:
+                _gL = cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8),
+                                   cv2.COLOR_RGB2GRAY).astype(np.float32)
+                _gx = cv2.Sobel(_gL, cv2.CV_32F, 1, 0, ksize=3)
+                _gy = cv2.Sobel(_gL, cv2.CV_32F, 0, 1, ksize=3)
+                _str = np.clip(np.sqrt(_gx ** 2 + _gy ** 2), 0, 40).astype(np.float32)
+                _dout2 = cv2.distanceTransform((~zone).astype(np.uint8),
+                                               cv2.DIST_L2, 5)
+                _rc2 = ((~zone) & (_dout2 >= 10.0) & (_dout2 <= 26.0)
+                        & (greenness <= 6))
+                if _rc2.any():
+                    _, (_S,) = _geodesic_background(
+                        rgb, cv2.erode(zone.astype(np.uint8), k3,
+                                       iterations=3) > 0,
+                        extra=[_str], extra_src=_rc2)
+                    w = np.clip((_S - 4.0) / 10.0, 0.0, 1.0)
+                    w = cv2.GaussianBlur(w, (0, 0), 4.0)[..., None]
+                    B = w * _init + (1 - w) * _Bh
+                    cap["w_struct"] = w.copy()
+                else:
+                    B = _Bh
             elif _init is not None:
                 B = _init
             cap["B_aligned"] = B.copy()
