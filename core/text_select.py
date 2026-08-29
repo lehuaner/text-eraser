@@ -1023,12 +1023,29 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     # 强度 strength 控制去绿力度(1=完全去绿, <1=保留少量绿光晕)。
     # 去绿区 = 整片发光区(含白字本体): 白字身上的淡绿铸色一并去除(只减 G 通道,
     # 白字仍近白可检), 视觉上不再残留「文字边缘那圈绿」(用户反馈"外围还剩一点")。
+    #
+    # 背景暖度补偿(556 类暖色背景修复): 上述 greenness=G−max(R,B) 隐含假设
+    # 「背景中性(R=G=B)」。暖色背景 R 本身高于 G(556 实测 R−G=+9, 黄调), 绿晕
+    # 叠加后观察绿度 = G绿光 − d(d=R−G 暖度) → 绿光量被低估 d; 减绿后晕区恢复到
+    # 中性(max(R,B)), 而真实背景 G 应比 R 低 d → 晕区相对周围偏绿(发绿), 填充
+    # 又从偏绿晕区取样放大色差。修正: 绿光量估计 = greenness + d(d 取 zone 外
+    # 环带的中位 R−G, 仅计正值), 减绿后晕区恢复到与背景一致的暖度; 白字笔画
+    # (text_stroke)不补偿 —— 防止白字 G 被多减而压暖。中性背景(668/178/635,
+    # d≈0)行为完全不变。
     m_zone = zone
     if not m_zone.any():
         tm = (tmask > 0).astype(np.uint8)
         return (rgb, tm, zone) if return_zone else (rgb, tm)
     greenness = np.maximum(g.astype(np.int16) - np.maximum(r, b), 0)  # 绿度, 非负
-    Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
+    # 背景暖度补偿(见上方说明): d = zone 外环带中位 R−G(仅正值)
+    _ring = (cv2.dilate(zone.astype(np.uint8), np.ones((21, 21), np.uint8)) > 0) & ~zone
+    if _ring.any():
+        d_warm = max(0.0, float(np.median((r - g)[_ring])))
+    else:
+        d_warm = 0.0
+    comp = np.where(text_stroke, 0.0, d_warm).astype(np.float32)   # 白字不补偿
+    glow = np.maximum(greenness + comp, 0)                          # 修正后的绿光量
+    Gn = out[m_zone, 1].astype(np.float32) - glow[m_zone] * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
     # 5) 方案B: 发光区(非文字)低频颜色场延拓重建 —— 光晕是低频现象(平滑的
@@ -1081,6 +1098,19 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         # (若整块色块全被 zone 盖住, 插值数学上无同色源可用, 任何算法都会串色)。
         geo_mask = cv2.erode(zone.astype(np.uint8), k3, iterations=3) > 0
         B = _geodesic_background(rgb, geo_mask)
+        # 背景暖度对齐: 测地源取自 zone 边缘 3px 环, 暖色背景上那圈像素带极淡
+        # 绿意(淡晕把 R−G 从 9 压到 ~5), B 场随之偏绿 —— 556 实测 B 场 R−G
+        # 中位 4.7 vs zone 外背景 9, 重建区(占晕区绝大多数像素)整体发绿, 填充
+        # 又从该区取样放大色差(即用户反馈的「绿色去除不干净」)。把 B 场 G 通道
+        # 对齐到 zone 外背景暖度 d_warm(仅平移 G 的低频底色, R/B 与高频不动);
+        # 中性背景 d_warm=0 → shift≤0 不动, 668/178/635 行为不变。
+        if d_warm > 0 and fb.any():
+            _bR = B[..., 0].astype(np.float32)[fb]
+            _bG = B[..., 1].astype(np.float32)[fb]
+            _shift = float(d_warm - np.median(_bR - _bG))
+            if _shift > 0:
+                B = B.astype(np.float32)
+                B[..., 1] = np.clip(B[..., 1] - _shift, 0, 255)
         imgf = rgb.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
                                       cv2.DIST_L2, 5)
