@@ -508,7 +508,7 @@ def _fill_nearby_white(rgb: np.ndarray, mask: np.ndarray,
 def _fill_bright_near_mask(rgb: np.ndarray, mask: np.ndarray,
                            bg_lo: int = 25, lum_off: int = 24,
                            min_rgb: int = 118, green_gate: int = 26,
-                           rounds: int = 6) -> np.ndarray:
+                           rounds: int = 6, ext_thr: int = 20) -> np.ndarray:
     """白字亮侧连通补全（方案B）：吃掉文字边缘 1~3px 的浅色残留。
 
     实测低分辨率白字(如 180px 缩略图上的「新」)在 v2 结果里的「碎块」全部落在
@@ -528,6 +528,16 @@ def _fill_bright_near_mask(rgb: np.ndarray, mask: np.ndarray,
     真实背景，阈值随背景自适应(暗背景自动放宽、亮背景自动收紧)。
     仅在去完发光的干净图上启用(如 v2 路径在并集蒙版上调用)：原始图的亮绿光晕
     会被绿度门放行一部分, 因此不在原图上跑。
+
+    背景亮纹理门(ext_thr): 候选门是「比背景亮 + 近白 + 非绿」的纯亮度条件,
+    非均匀背景上挡不住「字旁边恰好有一块更亮的石头/墙面纹理」——武器1787
+    「器」右侧的石纹亮带(灰 117~134, 全图背景 p25=93)全门通过, 6 轮连通
+    生长吞下 621px 非字形蒙版(亮带 + 右下亮斑串)。判据: 真字 AA 环带是
+    「有限结构」——从生长结果出发沿候选区测地行走必在十来步内耗尽(668 软边
+    环带实测 14 步走完); 背景亮场(石纹亮带/光斑串)比生长预算厚得多, ext_thr
+    步仍走不完(武器1787 实测 >64 步、残留 2827px) —— 含「走不完候选」的
+    候选连通块不是环带, 回退其全部新增。实测七图: 武器 621→54, 668 白块
+    覆盖保持 62/63, 其余五图蒙版逐像素不变。
     """
     if not mask.any():
         return mask
@@ -550,7 +560,26 @@ def _fill_bright_near_mask(rgb: np.ndarray, mask: np.ndarray,
             if not add.any():
                 break
             cur[add] = 1
-        return np.where(cur > 0, 255, 0).astype(np.uint8)
+        grown = np.where(cur > 0, 255, 0).astype(np.uint8)
+        # 背景亮纹理门: 从生长结果沿候选区测地走 ext_thr 步, 若候选连通块里
+        # 仍剩走不到的候选 → 该结构比环带厚 → 回退其全部新增。
+        added = (grown > 0) & (mask == 0)
+        leftover = cand & (cur == 0)
+        if added.any() and leftover.any() and ext_thr > 0:
+            reach = cur.copy()
+            for _ in range(ext_thr):
+                nxt = (cv2.dilate(reach, k3) > 0) & cand & (reach == 0)
+                if not nxt.any():
+                    break
+                reach[nxt] = 1
+            unreached = leftover & (reach == 0)
+            if unreached.any():
+                n, lab = cv2.connectedComponents(cand.astype(np.uint8), 8)
+                bad = np.unique(lab[unreached])
+                bad = bad[bad != 0]
+                if bad.size:
+                    grown[np.isin(lab, bad) & added] = 0
+        return grown
     return mask
 
 
