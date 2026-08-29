@@ -558,7 +558,8 @@ def _absorb_zone_bright_core(clean_rgb: np.ndarray, orig_rgb: np.ndarray,
                              mask: np.ndarray, zone: np.ndarray,
                              bg_off: int = 30, min_rgb_lo: int = 118,
                              green_gate: int = 26, max_cc_area: int = 200,
-                             orig_green_min: int = 18) -> np.ndarray:
+                             orig_green_min: int = 18,
+                             dist_max: int = 18) -> np.ndarray:
     """发光区内亮核吸收（668「新」字蒙版覆盖不全修复）。
 
     现象：绿晕把文字的孤立小部件（离主笔画 >方案B生长半径，668 实测 9.6~18.8px）
@@ -585,6 +586,16 @@ def _absorb_zone_bright_core(clean_rgb: np.ndarray, orig_rgb: np.ndarray,
     cand_zone = (zone > 0) & (mask == 0)
     if not cand_zone.any():
         return mask
+    # 距离约束: 文字的孤立部件离主蒙版不会太远(668 白块 9.6~18.8px)。
+    # 防的是「zone 边缘啃进亮背景(如浅色块)时, 边缘小条全部满足像素门」的
+    # 误吞 —— 668 前端默认参数(zone_expand=10)下, zone 上缘在浅色块里切出
+    # 9x4 小条(y≈89, 距主蒙版 22px)被整条吸收, 混进文字蒙版。dist_max=18
+    # 把它挡掉(实测顶部小点 26→0px, 白块吸收 56/63 不受影响)。
+    if dist_max and dist_max > 0:
+        dist = cv2.distanceTransform((mask == 0).astype(np.uint8), cv2.DIST_L2, 3)
+        cand_zone &= (dist <= float(dist_max))
+        if not cand_zone.any():
+            return mask
     gray = cv2.cvtColor(clean_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     outside = (mask == 0) & (zone == 0)
     bg = float(np.percentile(gray[outside], 25)) if outside.sum() else 90.0

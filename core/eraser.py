@@ -666,12 +666,13 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     )
     mask = ((tmask > 0) | (tm_clean > 0)).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    # 方案B: 白字亮侧连通补全(在**并集后**整体跑, 半径 6px) —— 吃掉低分辨率
-    # 下文字边缘 1~3px 的 AA 渐隐环带(实测 130~137 中性灰, Otsu 切在 ~255 处,
-    # 整条带被留在蒙版外 → 结果「碎块」; 膨胀只能包围种子, 对整条带无效)。
-    # 只在去完发光的 clean 上生长: 光晕已减绿变暗, 不会被误吞; 绿度门进一步
-    # 排除残余绿。在并集后跑保证 tmask/tm_clean 各自缺口都被补。
-    mask = _fill_bright_near_mask(clean, mask)
+    # 方案B: 白字亮侧连通补全(在**并集后**整体跑) —— 吃掉低分辨率下文字边缘
+    # 1~3px 的 AA 渐隐环带与「被绿晕染成中等亮度」的笔画段(668「亲」两横:
+    # clean 上 122~155、min_rgb 中位 103)。v2 路径门限放宽: min_rgb 118→96、
+    # 轮数 6→12 —— 亮侧补全是「门控生长」而非膨胀, 只吸亮于背景+24、近白、
+    # 非绿的像素; 文字蒙版与浅色块之间隔着重建暗带(亮度<110, 过不了亮度门),
+    # 轮数加大也不会越界啃亮背景(668 实测浅色块零吞入, 两横覆盖 87%→91%)。
+    mask = _fill_bright_near_mask(clean, mask, min_rgb=96, rounds=12)
     # 3b) 发光区内亮核吸收: 绿晕隔开的文字孤立小部件(DBNet 漏框、距主蒙版
     #     超过方案B生长半径、重建 detail 又保留其亮度) → 按「zone 内 + 亮于背景
     #     + 近白中性 + 小连通块 + 原图带绿(被绿晕染过, 排除中性亮背景纹理)」
