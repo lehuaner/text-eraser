@@ -1014,6 +1014,31 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     # 4px)会把光晕混入文字的颜色也保留成"边缘绿"。
     protect2 = cv2.dilate(text_stroke.astype(np.uint8), k3,
                           iterations=max(0, int(protect_px))) > 0
+    # 保护圈扩张: 把「与文字白芯紧邻、被绿晕染色的文字笔画段」也纳入保护圈。
+    # 背景: 668「新」左部"亲"的两横, 笔画被绿晕染色后绿度 46~64、min_rgb 中位
+    # 仅 103 —— 过不了 text_stroke 的「近白 min_rgb>120 & 绿度<40」门, 落在
+    # 保护圈外被背景重建抹平(去发光后两横 70% 像素变背景色, 用户反馈"两横没有
+    # 保留")。而这些细笔画在晕中的亮度对比只有 8~30, 重建的 detail 项救不回。
+    # 处理: 从「发光区内的白芯」出发, 沿四重门连通生长 ≤10px 并入保护圈 ——
+    #   - 空间约束: 只认贴着白芯(≤10px)的结构, 孤立光斑/远处一切不受影响;
+    #   - 亮度门: 灰度 > zone外背景25分位+20;
+    #   - 近白门: min_rgb ≥ 92 (晕的本底 r/b ≈ 77~92, 挡掉晕主体);
+    #   - 绿度窗 25 ≤ G−max(R,B) < 80: 下限挡绿度≈15 的弱色结构(668 黄条,
+    #     实测零吸入, 不干扰「色度结构保留」开关语义); 上限排浓绿晕。
+    # 668 实测: 找回 62% 被抹笔画; 晕区误吸 75px(减绿后≈背景亮度, 无视觉差异)。
+    # 圈内只减绿不重建 → 染绿笔画减绿后按原结构保留("文字本来什么样就什么样")。
+    if zone.any():
+        _zo = ~zone
+        _bg25 = float(np.percentile(gray[_zo], 25)) if _zo.any() else 80.0
+        _cand = ((gray > _bg25 + 20) & (min_rgb >= 92) &
+                 (greenness >= 25) & (greenness < 80))
+        _cur = text_stroke & zone
+        for _ in range(10):
+            _add = (cv2.dilate(_cur.astype(np.uint8), k3) > 0) & _cand & ~_cur
+            if not _add.any():
+                break
+            _cur |= _add
+        protect2 |= (_cur & zone)
     fb = zone & ~protect2
     # zone 占比过大的(≈整图都是"发光区", 如 635 的 75x78 小图)没有背景源,
     # 羽化重建无从传播 → 跳过, 维持纯减绿(此时保护圈外几乎无区域)。
