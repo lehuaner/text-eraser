@@ -989,9 +989,16 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     # 以强绿像素播种: 即使强发光图文字检测失败(tmask 空), 发光区也能被覆盖。
     # bright/faint_green 阈值放宽: 接近背景亮度、g-max 仅 3~8 的浅光边缘也纳入,
     # 修正「发光检测范围没盖住边缘浅光」(生长前沿原在亮-暗交界处即停)。
+    # bright 附加「绿意>2」约束(556 修复): 「比背景亮」分不清绿光晕的亮与
+    # 「本来就亮的背景层」—— 上亮下暗的图上, 亮层与晕接壤, 生长会沿接壤把
+    # 整个亮层吞进 zone; 亮层无绿意(greenness≈0), 重建时又无同色源可露,
+    # 被暗源拉平(556 实测: 亮层 7934px 100% 被吞、去发光后 −37 变暗)。
+    # 加绿意门后 zone 只圈「绿的东西」; 白色发光字由 text_stroke 保护。
     bg_cand = gray[~strong_green]
     bg_lum = float(np.median(bg_cand)) if bg_cand.size else 80.0
-    bright = (gray > (bg_lum + 6)) & (gray > 55)
+    _greenness_grow = np.maximum(g - np.maximum(r, b), 0)
+    bright = ((gray > (bg_lum + 6)) & (gray > 55)
+              & (_greenness_grow > 2))
     faint_green = (g - np.maximum(r, b) > 3) & (g > 55)
     grow_cond = green | bright | faint_green
     zone = (strong_green | (tmask > 0)).copy()
@@ -1136,6 +1143,15 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
             rebuilt = rebuilt * (1 - am) + imgf * am
         for c in range(3):
             out[..., c] = np.where(fb, rebuilt[..., c].astype(np.int16),
+                                   out[..., c])
+        # 重建软混合(556 修复): 重建权重按绿意 5→25 线性过渡 —— 浓晕区全重建、
+        # 淡晕/无晕处只保留减绿结果。zone 已不含亮层(bright 绿意门), 但晕边缘
+        # 与背景的过渡带绿意仍低, 若整片硬重建, 过渡带会被 B 场暗源拉出可见
+        # 边界; 软混合让「重建量随绿晕浓度渐入渐出」, 无硬边。绿意≤5 完全不动。
+        _w = np.clip((greenness - 5.0) / 20.0, 0.0, 1.0)[..., None]
+        _mix = out.astype(np.float32) * (1 - _w) + rebuilt * _w
+        for c in range(3):
+            out[..., c] = np.where(fb, _mix[..., c].astype(np.int16),
                                    out[..., c])
 
     # 文字笔画约束到「真正的强绿区」附近(dilate(strong_green)), 避免吞远处亮背景。
