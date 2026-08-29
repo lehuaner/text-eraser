@@ -340,11 +340,22 @@ async def erase(
     }
 
     if return_overlay:
-        overlay = rgb.copy()
+        # 发光区非空 = v2 实际执行了去发光。此时文字蒙版/填充蒙版的检测与
+        # 填充底图都是「去发光图」, 分步展示的蒙版叠加也用它 —— 与算法一致,
+        # 否则会看到「红蒙版盖着发光字」的错觉。
+        gz = meta.get("glow_zone")
+        has_glow = gz is not None and bool((gz > 0).any())
+        base = rgb
+        if has_glow:
+            dglow0 = meta.get("deglow_img")
+            if dglow0 is not None:
+                base = dglow0
+
+        overlay = base.copy()
         m_bool = mask > 0
         if m_bool.any():
             overlay[m_bool] = (
-                rgb[m_bool].astype(np.int32) * 0.35
+                base[m_bool].astype(np.int32) * 0.35
                 + np.array([255, 60, 60]) * 0.65
             ).clip(0, 255).astype(np.uint8)
         # 透明度扩展的软带: 以衰减的半透明红显示("红蒙版范围扩大")
@@ -352,27 +363,26 @@ async def erase(
         if sa is not None and (sa > 0).any():
             sb = sa > 0
             overlay[sb] = (
-                rgb[sb].astype(np.int32) * 0.72
+                base[sb].astype(np.int32) * 0.72
                 + (np.array([255, 60, 60], np.float32) * 0.28
                    * sa[sb, None]).clip(0, 255).astype(np.int32)
             ).clip(0, 255).astype(np.uint8)
         data["overlay_b64"] = _png(overlay)
         data["mask_b64"] = _png(mask)
 
-        # 移动边缘前的文字蒙版(红蒙版叠原图) —— 前端「文字蒙版」分步展示
+        # 移动边缘前的文字蒙版(红蒙版叠加) —— 前端「文字蒙版」分步展示
         m_pre = meta.get("mask_pre_edge")
         if m_pre is not None and (m_pre > 0).any():
-            ov_pre = rgb.copy()
+            ov_pre = base.copy()
             pb = m_pre > 0
             ov_pre[pb] = (
-                rgb[pb].astype(np.int32) * 0.35
+                base[pb].astype(np.int32) * 0.35
                 + np.array([255, 60, 60]) * 0.65
             ).clip(0, 255).astype(np.uint8)
             data["overlay_pre_b64"] = _png(ov_pre)
 
-        # 发光区蒙版(红蒙版叠原图) —— v2 去发光时的「发光蒙版」分步展示
-        gz = meta.get("glow_zone")
-        if gz is not None and (gz > 0).any():
+        # 发光区蒙版(红蒙版叠原图, 展示"原图哪里在发光")
+        if has_glow:
             ov_gz = rgb.copy()
             gb = gz > 0
             ov_gz[gb] = (
@@ -381,9 +391,11 @@ async def erase(
             ).clip(0, 255).astype(np.uint8)
             data["glow_zone_b64"] = _png(ov_gz)
 
-        # glow_mode="deglow_first" 时的中间产物：去除发光后的全图
+        # 去发光后的全图 —— 仅在「确实发生了去发光」时返回:
+        # v2 对无发光图零改动(zone 空), 不返回 deglow_b64 → 前端不显示该面板;
+        # 无 zone 概念的路径(如 deglow_first 实验)保持原行为。
         dglow = meta.get("deglow_img")
-        if dglow is not None:
+        if dglow is not None and (gz is None or has_glow):
             data["deglow_b64"] = _png(dglow)
 
         # v4 通用方案的每域结构化报告（溯源/模式/α 分位数）
