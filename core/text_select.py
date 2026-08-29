@@ -142,16 +142,36 @@ def _clean_text_mask(mask, H, W, min_area=30, max_area_ratio=0.05):
     返回清理后的 HxW uint8 蒙版(255=文字)。"""
     total = H * W
     n, lbl, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    keep = np.zeros((H, W), np.uint8)
+    # 先过面积门, 收集候选; 细长门带「远超同伴」约束: 字形的孤立竖/横笔画
+    # (测1787981 贝部竖 5x40, 长宽比 8.0)与相邻字高相当(h40 vs 同掩码字高中位
+    # 51), 纯长宽比门 h/w>6 会把它当「垂直分隔线」整条删掉 → 蒙版缺笔画;
+    # UI 分隔线通常远超文字行高 → 只有高/宽同时超过长宽比门 **且** 超过其余
+    # 组件中位尺寸 1.5 倍才删。无同伴时维持旧的纯长宽比判定(纯分隔线图)。
+    cand = []
     for i in range(1, n):
         a = int(stats[i, cv2.CC_STAT_AREA])
+        if a < max(min_area, 8) or a > total * max_area_ratio:
+            continue
+        cand.append(i)
+    hs = sorted(int(stats[i, cv2.CC_STAT_HEIGHT]) for i in cand)
+    ws = sorted(int(stats[i, cv2.CC_STAT_WIDTH]) for i in cand)
+    keep = np.zeros((H, W), np.uint8)
+    for k, i in enumerate(cand):
         x = int(stats[i, cv2.CC_STAT_LEFT]); y = int(stats[i, cv2.CC_STAT_TOP])
         w = int(stats[i, cv2.CC_STAT_WIDTH]); h = int(stats[i, cv2.CC_STAT_HEIGHT])
-        if a < max(min_area, 8):
+        # 同伴 = 除自己外的其余候选(否则单一分隔线的中位数就是它自己, 删不掉)
+        if len(cand) > 1:
+            oh = hs[:k] + hs[k + 1:]
+            ow = ws[:k] + ws[k + 1:]
+            med_h = float(oh[len(oh) // 2])
+            med_w = float(ow[len(ow) // 2])
+            tall_gate = h > 1.5 * med_h
+            wide_gate = w > 1.5 * med_w
+        else:
+            tall_gate = wide_gate = True   # 无同伴 → 纯长宽比判定(纯分隔线图)
+        if w / h > 25 and wide_gate:       # 又长又细且远超同伴宽 → UI 横线
             continue
-        if a > total * max_area_ratio:
-            continue
-        if w / h > 25 or h / w > 6:     # 又长又细 → UI 横线/分隔线
+        if h / w > 6 and tall_gate:        # 又细又长且远超同伴高 → 垂直分隔线
             continue
         keep[lbl == i] = 255
     return keep
