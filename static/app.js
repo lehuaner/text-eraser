@@ -11,10 +11,13 @@
 
   const boxOrig = $("boxOrig");
   const boxMask = $("boxMask");
+  const boxMaskPre = $("boxMaskPre");
   const boxText = $("boxText");
   const boxResult = $("boxResult");
   const boxDeglow = $("boxDeglow");
   const panelDeglow = $("panelDeglow");
+  const boxGlow = $("boxGlow");
+  const panelGlow = $("panelGlow");
 
   const status = $("status");
   const qOffEl = $("qOff");
@@ -156,10 +159,13 @@
   function resetPreview(msg = "请上传图片") {
     boxOrig.innerHTML = `<span class="hint">${msg}</span>`;
     boxMask.innerHTML = `<span class="hint">蒙版会在擦除完成后显示</span>`;
+    boxMaskPre.innerHTML = `<span class="hint">蒙版会在擦除完成后显示</span>`;
     boxText.innerHTML = `<span class="hint">文字图层会在擦除完成后显示</span>`;
     boxResult.innerHTML = `<span class="hint">结果会在擦除完成后显示</span>`;
-    boxDeglow.innerHTML = `<span class="hint">开启「先去发光再去字」后显示</span>`;
+    boxDeglow.innerHTML = `<span class="hint">开启去发光后显示</span>`;
+    boxGlow.innerHTML = `<span class="hint">开启去发光后显示</span>`;
     panelDeglow.hidden = true;
+    panelGlow.hidden = true;
     runBtn.disabled = true;
     downloadBtn.hidden = true;
     downloadTextBtn.hidden = true;
@@ -183,8 +189,11 @@
     setStatus(`已选择 ${f.name} (${(f.size / 1024).toFixed(1)} KB)`);
     runBtn.disabled = false;
     boxMask.innerHTML = `<span class="hint">蒙版会在擦除完成后显示</span>`;
+    boxMaskPre.innerHTML = `<span class="hint">蒙版会在擦除完成后显示</span>`;
     boxText.innerHTML = `<span class="hint">文字图层会在擦除完成后显示</span>`;
     boxResult.innerHTML = `<span class="hint">点击"擦除"开始</span>`;
+    boxGlow.innerHTML = `<span class="hint">开启去发光后显示</span>`;
+    panelGlow.hidden = true;
     downloadBtn.hidden = true;
     downloadTextBtn.hidden = true;
     downloadMaskBtn.hidden = true;
@@ -251,9 +260,14 @@
     return d;
   }
 
-  /* 把后端擦除结果渲染到四个预览面板 + 下载按钮 */
+  /* 把后端擦除结果渲染到分步预览面板 + 下载按钮
+     展示顺序(无发光): 原图 → 文字蒙版(边缘前) → 边缘后蒙版 → 文字图层 → 擦除结果
+                   (有发光): 原图 → 发光蒙版 → 去发光结果 → 文字蒙版 → 边缘后蒙版 → 文字图层 → 擦除结果 */
   function displayErase(d, nameHint, elapsedMs) {
-    setImg(boxMask, "data:image/png;base64," + d.overlay_b64, "红蒙版(叠原图)");
+    // 移动边缘前文字蒙版(优先专用产物, 老后端无则退回边缘后蒙版)
+    setImg(boxMaskPre, "data:image/png;base64," + (d.overlay_pre_b64 || d.overlay_b64),
+           "文字蒙版(移动边缘前)");
+    setImg(boxMask, "data:image/png;base64," + d.overlay_b64, "移动边缘后蒙版");
     if (d.text_layer_b64) {
       setImg(boxText, "data:image/png;base64," + d.text_layer_b64, "文字图层");
     } else {
@@ -307,13 +321,19 @@
     );
   }
 
-  /* deglow_first 实验：显示「去除发光后的全图」中间结果 */
+  /* 去发光分步：显示「发光蒙版」与「去除发光后的全图」中间结果 */
   function showDeglow(d) {
     if (d && d.deglow_b64) {
       setImg(boxDeglow, "data:image/png;base64," + d.deglow_b64, "去发光后");
       panelDeglow.hidden = false;
     } else {
       panelDeglow.hidden = true;
+    }
+    if (d && d.glow_zone_b64) {
+      setImg(boxGlow, "data:image/png;base64," + d.glow_zone_b64, "发光蒙版");
+      panelGlow.hidden = false;
+    } else {
+      panelGlow.hidden = true;
     }
   }
 
@@ -332,7 +352,9 @@
     if (d.orig_data_url) {
       setImg(boxOrig, d.orig_data_url, "原图");
     }
-    setImg(boxMask, "data:image/png;base64," + d.overlay_b64, "红蒙版(叠原图)");
+    setImg(boxMaskPre, "data:image/png;base64," + (d.overlay_pre_b64 || d.overlay_b64),
+           "文字蒙版(移动边缘前)");
+    setImg(boxMask, "data:image/png;base64," + d.overlay_b64, "移动边缘后蒙版");
     if (d.text_layer_b64) {
       setImg(boxText, "data:image/png;base64," + d.text_layer_b64, "文字图层");
     } else {

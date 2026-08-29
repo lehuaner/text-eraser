@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Text Eraser — 文字擦除</title>
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
 <header>
@@ -21,13 +21,21 @@
       <h3>原图</h3>
       <div class="imgbox" id="boxOrig"><span class="hint">上传图片或点击下方"使用示例图"</span></div>
     </div>
-    <div class="panel">
-      <h3>红蒙版 <small>(叠原图 · 红色=将要清除的字形)</small></h3>
-      <div class="imgbox" id="boxMask"><span class="hint">蒙版会在擦除完成后显示</span></div>
+    <div class="panel" id="panelGlow" hidden>
+      <h3>发光蒙版 <small>(红色=检测到的发光区)</small></h3>
+      <div class="imgbox" id="boxGlow"><span class="hint">开启去发光后显示</span></div>
     </div>
     <div class="panel" id="panelDeglow" hidden>
-      <h3>去发光 <small>(deglow_first 实验 · 去除发光后的全图)</small></h3>
-      <div class="imgbox" id="boxDeglow"><span class="hint">开启「先去发光再去字」后显示</span></div>
+      <h3>去发光结果 <small>(去除发光后的全图)</small></h3>
+      <div class="imgbox" id="boxDeglow"><span class="hint">开启去发光后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>文字蒙版 <small>(红 · 移动边缘前 · 即检测出的字形蒙版)</small></h3>
+      <div class="imgbox" id="boxMaskPre"><span class="hint">蒙版会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>移动边缘后蒙版 <small>(红 · 实际填充区 = 文字蒙版外扩 edge px)</small></h3>
+      <div class="imgbox" id="boxMask"><span class="hint">蒙版会在擦除完成后显示</span></div>
     </div>
     <div class="panel">
       <h3>文字图层 <small>(透明底 · 从原图提取出的字)</small></h3>
@@ -137,6 +145,6 @@
   <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
 </div>
 
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

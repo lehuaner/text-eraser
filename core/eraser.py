@@ -490,6 +490,7 @@ def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
     """
     # 1. 移动边缘(edge): 椭圆膨胀(>0)/腐蚀(<0)蒙版, 吸收字形 AA 抗锯齿边缘。
     #    edge=1(默认)=膨胀 1px 吃掉 AA; edge=0=仅取 Otsu 字形; edge<0=收缩选区。
+    mask_pre_edge = mask.copy()          # 移动边缘前的文字蒙版(前端分步展示用)
     if edge > 0:
         mask_filled = cv2.dilate(mask, _ellipse(edge))
     elif edge < 0:
@@ -550,6 +551,7 @@ def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
     }
     if soft_alpha is not None and (soft_alpha > 0).any():
         meta["soft_alpha"] = soft_alpha   # 供红蒙版半透明显示(不落历史)
+    meta["mask_pre_edge"] = mask_pre_edge  # 移动边缘前的文字蒙版(前端分步展示)
     if return_mask:
         # 展示蒙版 = 真实填充区(移动边缘 edge 后) —— 所见即所得
         return result, mask_filled, meta
@@ -692,6 +694,7 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     else:
         result, meta = res
     meta["deglow_img"] = clean
+    meta["glow_zone"] = zone          # 发光区(前端「发光蒙版」展示用)
     return (result, mask_filled, meta) if return_mask else (result, meta)
 
 

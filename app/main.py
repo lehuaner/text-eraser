@@ -359,6 +359,28 @@ async def erase(
         data["overlay_b64"] = _png(overlay)
         data["mask_b64"] = _png(mask)
 
+        # 移动边缘前的文字蒙版(红蒙版叠原图) —— 前端「文字蒙版」分步展示
+        m_pre = meta.get("mask_pre_edge")
+        if m_pre is not None and (m_pre > 0).any():
+            ov_pre = rgb.copy()
+            pb = m_pre > 0
+            ov_pre[pb] = (
+                rgb[pb].astype(np.int32) * 0.35
+                + np.array([255, 60, 60]) * 0.65
+            ).clip(0, 255).astype(np.uint8)
+            data["overlay_pre_b64"] = _png(ov_pre)
+
+        # 发光区蒙版(红蒙版叠原图) —— v2 去发光时的「发光蒙版」分步展示
+        gz = meta.get("glow_zone")
+        if gz is not None and (gz > 0).any():
+            ov_gz = rgb.copy()
+            gb = gz > 0
+            ov_gz[gb] = (
+                rgb[gb].astype(np.int32) * 0.35
+                + np.array([255, 60, 60]) * 0.65
+            ).clip(0, 255).astype(np.uint8)
+            data["glow_zone_b64"] = _png(ov_gz)
+
         # glow_mode="deglow_first" 时的中间产物：去除发光后的全图
         dglow = meta.get("deglow_img")
         if dglow is not None:
