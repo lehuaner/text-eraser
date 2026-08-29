@@ -919,31 +919,16 @@ def _deglow_full_green(rgb: np.ndarray, tmask: np.ndarray,
     return out.clip(0, 255).astype(np.uint8), glow
 
 
-def _geodesic_background(rgb: np.ndarray, zone: np.ndarray) -> np.ndarray:
-    """测地最近源背景色场: zone 内每个像素取「测地成本最小的背景像素」颜色。
+def _geodesic_sources(lum: np.ndarray, src_mask: np.ndarray):
+    """多源 Dijkstra(4 邻域, 边权 = 1(步进) + 3×相邻亮度差)。
 
-    多源 Dijkstra(4 邻域), 边权 = 1(步进) + 3×相邻亮度差。跨强边界(如 668 的
-    浅/深两色块交界, Δlum≈37)单步代价 100+, 传播会沿同色块内绕行 → 浅色区选
-    浅色源、深色区选深色源, 消除「zone 吞噬整块色块后, Telea 羽化把异色背景
-    填进去」的串色。源选择是低频决策 → 在降采样网格上算再双线性上采样, 快。
-
-    Args:
-        rgb: 原图 HxWx3 uint8
-        zone: bool (H,W) 待重建区
-    Returns:
-        B: (H,W,3) float32 背景色场(已轻平滑, 无高频)
+    返回每个像素「测地成本最小的源」在低分辨率网格上的坐标 (src_y, src_x)。
+    跨强边界(如 668 的浅/深两色块交界, Δlum≈37)单步代价 100+, 传播会沿同
+    色块内绕行 → 浅色区选浅色源、深色区选深色源, 消除「zone 吞噬整块色块后,
+    羽化把异色背景填进去」的串色。
     """
     import heapq
-    H, W = rgb.shape[:2]
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    scale = 4 if min(H, W) >= 160 else 2
-    H2, W2 = max(2, H // scale), max(2, W // scale)
-    lum = cv2.resize(gray, (W2, H2), interpolation=cv2.INTER_AREA)
-    rz = cv2.resize(zone.astype(np.uint8) * 255, (W2, H2),
-                    interpolation=cv2.INTER_NEAREST) > 127
-    rgb_s = cv2.resize(rgb, (W2, H2), interpolation=cv2.INTER_AREA)
-    src_mask = ~rz
-
+    H2, W2 = lum.shape
     INF = float("inf")
     dist = np.full((H2, W2), INF, np.float32)
     src_y = np.zeros((H2, W2), np.int32)
@@ -971,10 +956,154 @@ def _geodesic_background(rgb: np.ndarray, zone: np.ndarray) -> np.ndarray:
                 src_y[ny, nx] = sy
                 src_x[ny, nx] = sx
                 heapq.heappush(heap, (nd, int(ny), int(nx)))
+    return src_y, src_x
+
+
+def _geodesic_background(rgb: np.ndarray, zone: np.ndarray,
+                         extra=None, extra_src=None):
+    """测地最近源背景色场: zone 内每个像素取「测地成本最小的背景像素」颜色。
+
+    源选择是低频决策 → 在降采样网格上算再双线性上采样, 快。
+
+    Args:
+        rgb: 原图 HxWx3 uint8
+        zone: bool (H,W) 待重建区
+        extra: 可选 [(H,W) float32] —— 逐像素值场, 用与 B 相同(或 extra_src
+            指定)的测地源映射传播(源点取值→同一上采样/平滑链)。
+        extra_src: 可选 bool (H,W) —— extra 专用源集(如「zone 外干净环带」,
+            排除 zone 最外圈仍带淡晕的像素)。None 时 extra 与 B 同源。
+    Returns:
+        B: (H,W,3) float32 背景色场(已轻平滑, 无高频)
+        extras: extra 为 None 时不出; 否则返回对齐的 [(H,W) float32] 列表
+    """
+    import heapq
+    H, W = rgb.shape[:2]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    scale = 4 if min(H, W) >= 160 else 2
+    H2, W2 = max(2, H // scale), max(2, W // scale)
+    lum = cv2.resize(gray, (W2, H2), interpolation=cv2.INTER_AREA)
+    rz = cv2.resize(zone.astype(np.uint8) * 255, (W2, H2),
+                    interpolation=cv2.INTER_NEAREST) > 127
+    rgb_s = cv2.resize(rgb, (W2, H2), interpolation=cv2.INTER_AREA)
+    src_mask = ~rz
+
+    src_y, src_x = _geodesic_sources(lum, src_mask)
     B_s = rgb_s[src_y, src_x].astype(np.float32)     # (H2,W2,3) 源色
     B = cv2.resize(B_s, (W, H), interpolation=cv2.INTER_CUBIC)
     B = cv2.GaussianBlur(B, (0, 0), 4.0)             # 轻平滑: 去源块拼接感
-    return B
+    if extra is None:
+        return B
+    if extra_src is not None:
+        # extra 专用源集(如 zone 外干净环带): 单独跑一次同代价场的 Dijkstra
+        es = cv2.resize(extra_src.astype(np.uint8) * 255, (W2, H2),
+                        interpolation=cv2.INTER_NEAREST) > 127
+        ey, ex = _geodesic_sources(lum, es)
+    else:
+        ey, ex = src_y, src_x
+    outs = []
+    for e in extra:
+        e_s = cv2.resize(e, (W2, H2), interpolation=cv2.INTER_AREA)[ey, ex]
+        e_f = cv2.resize(e_s, (W, H), interpolation=cv2.INTER_CUBIC)
+        outs.append(cv2.GaussianBlur(e_f, (0, 0), 4.0))
+    return B, outs
+
+
+def _harmonic_background(values: np.ndarray, hole: np.ndarray,
+                         ring_lo: int = 2, ring_hi: int = 4,
+                         iters: int = 300, max_side: int = 200,
+                         init: np.ndarray = None):
+    """调和插值背景场：在 hole(待重建区) 内解 Laplace 方程 ΔB=0，
+    边界条件 = hole 外「非亮脊」背景像素的实测值。
+
+    与测地「单源复制」场相比，调和场是**与边界连续的最平滑填充**——没有
+    源块拼接感，适合偏纯色背景：发光区内部不再出现测地源分块造成的色差色块。
+    两级多重网格：粗网格(scale×4)先解收敛**全局低频**(Jacobi 全局模式收敛需
+    O(n²) 次, 细网格直接解低频远不够 → 内部保留 init 色阶, 与局部背景出现
+    阶差 =「割裂边」)，再回细网格精修。
+    **亮脊排除**：紧邻 hole 的亮结构(米黄分界线等)若作为固定边界，会把亮度
+    传播进带下方的填充(556 实测: 带下填充比局部背景亮 10~20, 即贴边亮盘)。
+    故把「比外侧 60 分位亮度高 12」的亮脊并入求解域(不固定)，内部解只由
+    非亮脊背景牵引；亮脊自身在 hole 外保持原值不受影响。
+
+    Returns: (H,W,3) float32 调和背景场。
+    """
+    H, W = values.shape[:2]
+    long_side = max(H, W)
+    scale = max(2, -(-long_side // max_side))       # ceil
+
+    def _prep(level_div):
+        Wl, Hl = max(2, W // (scale * level_div)), max(2, H // (scale * level_div))
+        hole_l = cv2.resize(hole.astype(np.uint8) * 255, (Wl, Hl),
+                            interpolation=cv2.INTER_NEAREST) > 127
+        vals_l = cv2.resize(values.astype(np.float32), (Wl, Hl),
+                            interpolation=cv2.INTER_AREA)
+        gray_l = vals_l @ np.array([0.299, 0.587, 0.114], np.float32)
+        outl = ~hole_l
+        if outl.any():
+            thr = float(np.percentile(gray_l[outl], 60)) + 12.0
+            bright = outl & (gray_l > thr)
+        else:
+            bright = np.zeros_like(hole_l)
+        solve_domain = hole_l | bright
+        if bright.mean() > 0.6 or (~solve_domain).sum() < 8:
+            solve_domain = hole_l                   # 亮区过大: 退回全边界
+        pin = ~solve_domain
+        if not hole_l.any() or hole_l.all() or pin.sum() < 8:
+            return None
+        return hole_l, vals_l, pin
+
+    def _solve(vals_l, domain_l, pin_l, iters_, init_vals=None):
+        if not domain_l.any() or domain_l.all() or not pin_l.any():
+            return None
+        B = vals_l.copy()
+        if init_vals is not None:
+            B[domain_l] = init_vals[domain_l]
+        else:
+            dout = cv2.distanceTransform((~domain_l).astype(np.uint8),
+                                         cv2.DIST_L2, 5)
+            ring = (~domain_l) & (dout >= ring_lo) & (dout <= ring_hi)
+            if not ring.any():
+                return None
+            B[domain_l] = vals_l[ring].mean(axis=0)
+        B[pin_l] = vals_l[pin_l]
+        for _ in range(iters_):
+            up = np.vstack([B[:1], B[:-1]])
+            down = np.vstack([B[1:], B[-1:]])
+            left = np.hstack([B[:, :1], B[:, :-1]])
+            right = np.hstack([B[:, 1:], B[:, -1:]])
+            avg = (up + down + left + right) / 4.0
+            B[domain_l] = avg[domain_l]
+        return B
+
+    pre = _prep(4)
+    init_grid = None
+    if pre is not None:
+        hole_co, vals_co, pin_co = pre
+        Bc = _solve(vals_co, hole_co | (~pin_co & ~hole_co), pin_co, 400)
+        if Bc is not None:
+            init_grid = cv2.resize(Bc, (max(2, W // scale), max(2, H // scale)),
+                                   interpolation=cv2.INTER_CUBIC)
+    pre = _prep(1)
+    if pre is None:
+        return None
+    hole_l, vals_l, pin_l = pre
+    init_l = None
+    if init_grid is not None or init is not None:
+        init_l = vals_l.copy()
+        if init_grid is not None:
+            init_l = cv2.resize(init_grid, (vals_l.shape[1], vals_l.shape[0]),
+                                interpolation=cv2.INTER_CUBIC)
+        if init is not None:
+            init_i = cv2.resize(init.astype(np.float32),
+                                (vals_l.shape[1], vals_l.shape[0]),
+                                interpolation=cv2.INTER_AREA)
+            init_l = init_l * 0.45 + init_i * 0.55 if init_grid is not None \
+                else init_i
+    B = _solve(vals_l, hole_l | (~pin_l & ~hole_l), pin_l, iters, init_l)
+    if B is None:
+        return None
+    out = cv2.resize(B, (W, H), interpolation=cv2.INTER_CUBIC)
+    return cv2.GaussianBlur(out, (0, 0), 2.0)
 
 
 def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
@@ -1099,8 +1228,47 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         d_warm = max(0.0, float(np.median((r - g)[_ring])))
     else:
         d_warm = 0.0
-    comp = np.where(text_stroke, 0.0, d_warm).astype(np.float32)   # 白字不补偿
-    glow = np.maximum(greenness + comp, 0)                          # 修正后的绿光量
+
+    # 测地背景场 B + 「局部背景暖度/色度场 D_rg/D_gb」(提前到减绿前: 局部暖度
+    # 直接参与减绿量, 见下)。B 供后面 fb 重建复用, 避免算两次。
+    # 色度参考源集 = zone 外 10~26px 干净环带: 排除 zone 本体贴边(带 ε≤3 淡晕),
+    # 也要躲开晕尾 —— 暖背景上晕尾像素 greenness≈0 但 R−G 被压低(实测近环
+    # 0~21px 中位 7 vs 远环 10), 贴边取样会把偏绿参考传满填充区。
+    B = D_rg = D_gb = None
+    if zone.any() and zone.sum() < 0.8 * H * W:
+        geo_mask = cv2.erode(zone.astype(np.uint8), k3, iterations=3) > 0
+        _dout = cv2.distanceTransform((~zone).astype(np.uint8), cv2.DIST_L2, 5)
+        _ring_clean = ((~zone) & (_dout >= 10.0) & (_dout <= 26.0)
+                       & (greenness <= 6))
+        if _ring_clean.any():
+            B, (D_rg, D_gb) = _geodesic_background(
+                rgb, geo_mask,
+                extra=[(r - g).astype(np.float32), (g - b).astype(np.float32)],
+                extra_src=_ring_clean)
+        else:
+            B = _geodesic_background(rgb, geo_mask)
+
+    # 减绿量(绿光量):
+    # 暖背景(d_warm>0)用「局部暖度场」量光: 绿晕只抬 G、几乎不动 R → 像素 R−G
+    # 相对局部背景 R−G(D_rg) 的落差就是真实绿光。等价于 greenness + d_local,
+    # 但 d 不再是全局标量 —— 556 实测背景暖度逐弧段 0~10(左橄榄/右暖褐), 旧全局
+    # d_warm=7 在橄榄弧过减 6(=暗带)、暖弧欠减 2(=泛绿), 且 greenness 把外扩环
+    # 上的真实残晕低估 d(晕尾漏删)。局部场对真背景像素(像素暖度=背景暖度)自动
+    # 归零, 三类误差一并消除。
+    # 中性背景(d_warm≈0, 178/635/668/换装等): 不进此分支, 减绿量=greenness,
+    # 与历史行为逐位一致。
+    if d_warm > 0 and D_rg is not None:
+        glow = np.maximum(D_rg - (r - g).astype(np.float32), 0.0)
+        glow[text_stroke] = greenness[text_stroke]     # 白字笔画不补偿(同旧 comp=0)
+        # 晕尾外扩: 暖背景上 zone 边界外仍有 δG≈3~8 的尾(greenness≈0 完全不可
+        # 见), 不处理就在边界内侧(已压回真背景)与外侧(带尾)之间留下 ~3 亮度/
+        # ~3 色相的台阶。局部暖度公式对真背景像素自动归零 → 减绿区可安全外扩,
+        # 直到尾自然衰减为零, 台阶消失。
+        m_zone = cv2.dilate(m_zone.astype(np.uint8), cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (29, 29))) > 0
+    else:
+        comp = np.where(text_stroke, 0.0, d_warm).astype(np.float32)
+        glow = np.maximum(greenness + comp, 0)
     Gn = out[m_zone, 1].astype(np.float32) - glow[m_zone] * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
 
@@ -1141,32 +1309,59 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
             _cur |= _add
         protect2 |= (_cur & zone)
     fb = zone & ~protect2
+    # 暖背景(d_warm>0)附加: 保护圈环带并入重建。去绿只减「G 超出 max(R,B)」
+    # 的部分, 但绿辉光物理上抬升了全部通道(556 实测保护圈像素 R=144 vs 背景
+    # R≈85)——保留圈带的「非绿辉光亮度」在擦字后表现为一圈亮盘(lum 164 vs
+    # 背景 77), 即「擦除区域与背景割裂」。暖路径把保护圈环带(白芯 1px 外,
+    # 即染绿笔画/晕壳)并入重建拉回背景色; 笔画白芯保留供 tm_clean 检测,
+    # 白芯的擦除由原图 tmask 覆盖。中性背景图(178/635/668)不进此分支。
+    if d_warm > 0:
+        fb = zone & ~cv2.dilate(text_stroke.astype(np.uint8), k3,
+                                iterations=1) > 0
     # zone 占比过大的(≈整图都是"发光区", 如 635 的 75x78 小图)没有背景源,
     # 羽化重建无从传播 → 跳过, 维持纯减绿(此时保护圈外几乎无区域)。
-    if fb.any() and zone.sum() < 0.8 * H * W:
-        # 背景色场用「测地最近源」重建: zone 内每像素取「测地成本最小的背景
-        # 像素」的颜色。边权 = 1(步进) + 3×相邻亮度差 —— 跨强边界(如 668 的
-        # 浅/深两色块交界, Δlum≈37)代价大, 传播沿同色块内绕行, 浅色区选浅色
-        # 源、深色区选深色源 → 消除「zone 吞噬整块色块后, 羽化把异色背景填进
-        # 去」的串色(替换 Telea 的欧氏最近源; 此前的 Telea 会把浅色区补成深色)。
-        # 关键: 待重建区先**内收 3px**再当 mask —— 让紧贴 zone 的浅/深色块边缘
-        # 露出一小圈"同色源", 测地才能沿色块把正确颜色送进被整体吞噬的区域
-        # (若整块色块全被 zone 盖住, 插值数学上无同色源可用, 任何算法都会串色)。
-        geo_mask = cv2.erode(zone.astype(np.uint8), k3, iterations=3) > 0
-        B = _geodesic_background(rgb, geo_mask)
-        # 背景暖度对齐: 测地源取自 zone 边缘 3px 环, 暖色背景上那圈像素带极淡
-        # 绿意(淡晕把 R−G 从 9 压到 ~5), B 场随之偏绿 —— 556 实测 B 场 R−G
-        # 中位 4.7 vs zone 外背景 9, 重建区(占晕区绝大多数像素)整体发绿, 填充
-        # 又从该区取样放大色差(即用户反馈的「绿色去除不干净」)。把 B 场 G 通道
-        # 对齐到 zone 外背景暖度 d_warm(仅平移 G 的低频底色, R/B 与高频不动);
-        # 中性背景 d_warm=0 → shift≤0 不动, 668/178/635 行为不变。
-        if d_warm > 0 and fb.any():
-            _bR = B[..., 0].astype(np.float32)[fb]
-            _bG = B[..., 1].astype(np.float32)[fb]
-            _shift = float(d_warm - np.median(_bR - _bG))
-            if _shift > 0:
-                B = B.astype(np.float32)
-                B[..., 1] = np.clip(B[..., 1] - _shift, 0, 255)
+    if fb.any() and zone.sum() < 0.8 * H * W and B is not None:
+        # (B 与 D_rg/D_gb 已在减绿前算好 —— 见「测地背景场」块。此处只做对齐
+        #  与重建。)
+        # 偏纯色背景的调和填充(d_warm>0 门控): 测地单源场有「源块拼接」的低频
+        # 色差(556 实测 fb 内 30~60px 尺度的明暗补丁, 加大高斯平滑无效)。
+        # 但调和插值(ΔB=0)是无结构的 —— 跨越 zone 边界的结构(米黄分界线/暗色
+        # 枯枝)在晕内会被抹成与周边的混合色, 边界两侧结构强度不一致又成割裂。
+        # 最终方案 = 两者按「结构强度」混合:
+        #   S = 测地传播的边界梯度强度(带/纹延续区高, 平坦区低)
+        #   B = w·测地对齐场 + (1−w)·调和场,  w = clip((S−4)/10, 0, 1)
+        # 平坦区走调和(无色块), 结构延续区走测地(带/纹清晰跨过晕区)。
+        if d_warm > 0:
+            _init = None
+            if D_rg is not None:
+                _init = np.stack([B[..., 0],
+                                  B[..., 0] - D_rg,
+                                  B[..., 0] - D_rg - D_gb], axis=-1)
+                np.clip(_init, 0, 255, out=_init)
+            _Bh = _harmonic_background(out, zone, init=_init)
+            if _Bh is not None and D_rg is not None:
+                # 结构强度场: 晕外环带实测梯度 → 测地传播进晕区
+                _gL = cv2.cvtColor(np.clip(out, 0, 255).astype(np.uint8),
+                                   cv2.COLOR_RGB2GRAY).astype(np.float32)
+                _gx = cv2.Sobel(_gL, cv2.CV_32F, 1, 0, ksize=3)
+                _gy = cv2.Sobel(_gL, cv2.CV_32F, 0, 1, ksize=3)
+                _str = np.clip(np.sqrt(_gx ** 2 + _gy ** 2), 0, 40).astype(np.float32)
+                _dout2 = cv2.distanceTransform((~zone).astype(np.uint8),
+                                               cv2.DIST_L2, 5)
+                _rc2 = ((~zone) & (_dout2 >= 10.0) & (_dout2 <= 26.0)
+                        & (greenness <= 6))
+                if _rc2.any():
+                    _, (_S,) = _geodesic_background(
+                        rgb, cv2.erode(zone.astype(np.uint8), k3,
+                                       iterations=3) > 0,
+                        extra=[_str], extra_src=_rc2)
+                    w = np.clip((_S - 4.0) / 10.0, 0.0, 1.0)
+                    w = cv2.GaussianBlur(w, (0, 0), 4.0)[..., None]
+                    B = w * _init + (1 - w) * _Bh
+                else:
+                    B = _Bh
+            elif _init is not None:
+                B = _init
         imgf = rgb.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
                                       cv2.DIST_L2, 5)
@@ -1203,6 +1398,11 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         # 淡晕/无晕处只保留减绿结果。zone 已不含亮层(bright 绿意门), 但晕边缘
         # 与背景的过渡带绿意仍低, 若整片硬重建, 过渡带会被 B 场暗源拉出可见
         # 边界; 软混合让「重建量随绿晕浓度渐入渐出」, 无硬边。绿意≤5 完全不动。
+        # ⚠ 实测这段混合在 fb 内是恒等式(out[fb] 上一行已被赋为 rebuilt),
+        # w 全程不起作用 —— 但**不能**按字面语义"修好"它: 若让 ε≤5 像素保留
+        # 减绿原值, 晕尾的真实亮度(绿度低≠不亮)会整圈残留, 668 大 zone 图上
+        # 即形成肉眼暗带(2026-08-29 第二轮踩坑)。保持 HEAD 原序, fb 全量走
+        # 重建/B场压平(经 chroma-keep 调制)才是各图验证过的行为。
         _w = np.clip((greenness - 5.0) / 20.0, 0.0, 1.0)[..., None]
         _mix = out.astype(np.float32) * (1 - _w) + rebuilt * _w
         for c in range(3):
