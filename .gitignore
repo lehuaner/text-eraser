@@ -8,3 +8,5 @@ data/
 
 # 下载的模型文件（自动下载，勿入库）
 core/models/det/*.onnx
+# 工具记忆
+.workbuddy/
