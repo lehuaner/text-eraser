@@ -70,7 +70,8 @@ def _normalize_sample_mask(sample_mask, H, W):
     return (canvas > 0)
 
 
-def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=None):
+def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=None,
+            flat_span: int = 40, flat_tex: float = 15.0):
     """
     内容识别填充（PatchMatch 范例式修复）。
 
@@ -90,6 +91,14 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
                    (木纹/岩石条带/布料织纹)，让填充沿 60° 之类方向平滑延展。
                    不提供(默认 None)时维持原 PatchMatch 行为。
     should_cancel: 可选零参 callable，返回 True 时尽快中断(返回当前已填结果)。
+    flat_span / flat_tex : 平滑渐变背景自适应门。洞外四边环带的中位亮度极差
+                   ≥flat_span **且** 环带梯度中位 <flat_tex 时，判定背景为
+                   「强亮度渐变 + 无纹理可复制」(如换装.png 的雾面金色光效)：
+                   PatchMatch 的 7×7 块直拷无法维持渐变的亮度连续性 —— 相邻
+                   块选中不同色调的源、同圈互相冲突、下一圈又以冲突像素为锚，
+                   碎块伪影随填充内传放大(实测换装.png 文字区黑碎块)。这种
+                   背景本身没有纹理可保，扩散插值(TELEA)的连续性更优 → 直接
+                   TELEA。纹理背景(布纹/岩石)或均匀背景不受影响。
     return       : HxWx3 uint8
     """
     img = np.ascontiguousarray(image_rgb[..., :3], dtype=np.float32)
@@ -97,6 +106,32 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
     m = (np.asarray(mask) > 0)
     if not m.any():
         return img.astype(np.uint8).copy()
+
+    # ---- 平滑渐变背景检测(见 flat_span/flat_tex 说明) ----
+    gray0 = cv2.cvtColor(np.clip(img, 0, 255).astype(np.uint8),
+                         cv2.COLOR_RGB2GRAY).astype(np.float32)
+    ys0, xs0 = np.where(m)
+    y0_, y1_, x0_, x1_ = ys0.min(), ys0.max(), xs0.min(), xs0.max()
+    band = 12
+    edges_med = []
+    for sl in (np.s_[max(0, y0_-band):y0_+1, x0_:x1_+1],
+               np.s_[y1_:min(OH, y1_+band+1), x0_:x1_+1],
+               np.s_[y0_:y1_+1, max(0, x0_-band):x0_+1],
+               np.s_[y0_:y1_+1, x1_:min(OW, x1_+band+1)]):
+        vals = gray0[sl][~m[sl]]
+        if vals.size:
+            edges_med.append(float(np.median(vals)))
+    if len(edges_med) >= 2 and direction is None:
+        span = float(np.max(edges_med) - np.min(edges_med))
+        gx0 = cv2.Sobel(gray0, cv2.CV_32F, 1, 0, ksize=3)
+        gy0 = cv2.Sobel(gray0, cv2.CV_32F, 0, 1, ksize=3)
+        grad0 = np.sqrt(gx0 ** 2 + gy0 ** 2)
+        ring0 = (cv2.dilate(m.astype(np.uint8), np.ones((41, 41), np.uint8)) > 0) & ~m
+        tex = float(np.median(grad0[ring0])) if ring0.any() else 0.0
+        if span >= flat_span and tex < flat_tex:
+            out = cv2.inpaint(np.clip(img, 0, 255).astype(np.uint8),
+                              m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
+            return out
 
     # 安全内边距：文字贴图像边缘时，ROI 内的 PxP 块切片会越界(历史崩溃点)。
     # 把整图四周复制扩展 padm 像素，ROI 计算用 padding 后尺寸(坐标相对不变)，
