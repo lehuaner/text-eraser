@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Text Eraser — 文字擦除</title>
-<link rel="stylesheet" href="/static/style.css?v=3">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 <header>
@@ -101,6 +101,10 @@
           <label>文字保护圈<small>(px, 文字笔画外扩, 圈内只去绿铸不做羽化; 0=紧贴笔画, 默认1)</small>
             <input type="number" id="deglowProtectPx" min="0" max="8" step="1" value="1">
           </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="deglowChromaKeep">
+            色度结构保留<small>(保留分隔线/描边等非绿弱色结构, 不被重建抹掉; 默认关)</small>
+          </label>
           <label>去发光范围外扩<small>(px, 把极淡光晕外缘也纳入去绿, 默认10, 调大覆盖更远残绿)</small>
             <input type="number" id="deglowZoneExpand" min="0" max="60" step="1" value="10">
           </label>
@@ -133,6 +137,6 @@
   <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
 </div>
 
-<script src="/static/app.js?v=3"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>

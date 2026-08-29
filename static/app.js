@@ -28,6 +28,7 @@
   const deglowEnabledEl = $("deglowEnabled");
   const deglowStrengthEl = $("deglowStrength");
   const deglowProtectPxEl = $("deglowProtectPx");
+  const deglowChromaKeepEl = $("deglowChromaKeep");
   const deglowMaskSoftEl = $("deglowMaskSoft");
   const deglowZoneExpandEl = $("deglowZoneExpand");
   const fillWhiteEl = $("fillWhite");
@@ -221,6 +222,7 @@
     form.append("deglow_scheme", deglowEnabledEl.checked ? "v2" : "off");
     form.append("deglow_strength", deglowStrengthEl.value);
     form.append("deglow_protect_px", String(parseInt(deglowProtectPxEl.value, 10) || 1));
+    form.append("deglow_chroma_keep", deglowChromaKeepEl.checked ? "true" : "false");
     form.append("deglow_mask_soft", deglowMaskSoftEl.value);
     form.append("deglow_zone_expand", deglowZoneExpandEl.value);
     form.append("fill_white", fillWhiteEl.checked ? "true" : "false");
@@ -297,7 +299,7 @@
     const cfg = d.cfg || {};
     const glowTxt = (cfg.deglow_scheme === "off")
       ? " • 去发光[关]"
-      : ` • 去发光[强度${cfg.deglow_strength} 保护圈${cfg.deglow_protect_px}px 外扩${cfg.deglow_zone_expand} 软扩${cfg.deglow_mask_soft}]`;
+      : ` • 去发光[强度${cfg.deglow_strength} 保护圈${cfg.deglow_protect_px}px 外扩${cfg.deglow_zone_expand} 软扩${cfg.deglow_mask_soft}${cfg.deglow_chroma_keep ? " 保色度" : ""}]`;
     const autoTxt = d.auto_edge ? ` • 自动移动边缘→${d.edge_used}` : "";
     setStatus(
       `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${glowTxt}${autoTxt}`,

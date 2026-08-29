@@ -78,6 +78,7 @@ def _erase_once(
     deglow_zone_ratio: float = 0.6,
     deglow_zone_expand: int = 10,
     deglow_protect_px: int = 1,
+    deglow_chroma_keep: bool = False,
     deglow_scheme: str = "v2",
 ):
     """最小化文字擦除管线.
@@ -215,6 +216,7 @@ def _erase_once(
             deglow_zone_ratio=deglow_zone_ratio,
             deglow_zone_expand=deglow_zone_expand,
             deglow_protect_px=deglow_protect_px,
+            deglow_chroma_keep=deglow_chroma_keep,
             soft_expand=msoft,
         )
 
@@ -277,6 +279,7 @@ def erase_text(
     deglow_zone_ratio: float = 0.6,
     deglow_zone_expand: int = 10,
     deglow_protect_px: int = 1,
+    deglow_chroma_keep: bool = False,
     deglow_scheme: str = "v2",
 ):
     """文字擦除入口。
@@ -302,7 +305,9 @@ def erase_text(
             deglow_zone_ratio=deglow_zone_ratio,
             deglow_zone_expand=deglow_zone_expand,
             deglow_protect_px=deglow_protect_px,
+            deglow_chroma_keep=deglow_chroma_keep,
             deglow_scheme=deglow_scheme)
+
     return _erase_once(
         rgb, edge=edge, q_off=q_off, max_area_ratio=max_area_ratio,
         max_box_ratio=max_box_ratio, ml_max_side=ml_max_side,
@@ -316,6 +321,7 @@ def erase_text(
         deglow_zone_ratio=deglow_zone_ratio,
         deglow_zone_expand=deglow_zone_expand,
         deglow_protect_px=deglow_protect_px,
+        deglow_chroma_keep=deglow_chroma_keep,
         deglow_scheme=deglow_scheme)
 
 
@@ -616,6 +622,7 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
                      deglow_zone_ratio: float = 0.6,
                      deglow_zone_expand: int = 10,
                      deglow_protect_px: int = 1,
+                     deglow_chroma_keep: bool = False,
                      soft_expand: float = 0.0):
     """v2 入口：先减绿度去发光 → 再对「去完发光的图」走普通去字算法(非高亮路径)。
 
@@ -640,7 +647,8 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     clean, _ = _deglow_full_green_v2(
         rgb, tmask, strength=deglow_strength,
         zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-        protect_px=deglow_protect_px)
+        protect_px=deglow_protect_px,
+        deglow_chroma_keep=deglow_chroma_keep)
 
     # 3) 普通去文字算法(非高亮路径):
     #    文字蒙版 = 原始图(白字 vs 绿背景对比强、漏检少, tint=False 不把光晕当字)

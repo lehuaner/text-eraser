@@ -858,6 +858,7 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                           zone_ratio: float = 0.6,
                           zone_expand: int = 24,
                           protect_px: int = 1,
+                          deglow_chroma_keep: bool = False,
                           debug: bool = False) -> tuple:
     """原型 v2：发光区用「真·alpha 分解」恢复底层纹理，mask 只收紧到高α核心+文字。
 
@@ -969,6 +970,23 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         dw = np.clip(dtext / 8.0, 0.0, 1.0)[..., None]
         detail = (imgf - cv2.GaussianBlur(imgf, (0, 0), 2.0)) * dw
         rebuilt = np.clip(B + detail, 0, 255)
+        # 色度结构保留(开关): 光晕是「绿主导」的大片色偏(典型绿度 g-max>20);
+        # 而 UI 分隔线/描边等弱色结构(如 668 浅色带下沿的黄条: R−B 大但绿度低
+        # ≈15)不是光晕, 不应被背景重建抹掉。对 fb 内「色偏明显(|R−B|>8)且
+        # 绿度非光晕(g-max<20)」的像素, 按强权重从原图把原色差保留回重建结果。
+        # 默认关(不变现有行为)。
+        if deglow_chroma_keep:
+            rk = r[fb].astype(np.float32)
+            gk = g[fb].astype(np.float32)
+            bk = b[fb].astype(np.float32)
+            ggreen = gk - np.maximum(rk, bk)
+            rb_hot = (np.abs(rk - bk) > 8).astype(np.float32)
+            a = (ggreen < 20.0).astype(np.float32) * rb_hot * 0.85
+            a_map = np.zeros((H, W), np.float32)
+            a_map[fb] = a
+            a_map = cv2.GaussianBlur(a_map, (0, 0), 1.5)   # 软过渡防跳变
+            am = a_map[..., None]                          # (H,W,1)
+            rebuilt = rebuilt * (1 - am) + imgf * am
         for c in range(3):
             out[..., c] = np.where(fb, rebuilt[..., c].astype(np.int16),
                                    out[..., c])
