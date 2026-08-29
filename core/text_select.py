@@ -559,7 +559,8 @@ def _absorb_zone_bright_core(clean_rgb: np.ndarray, orig_rgb: np.ndarray,
                              bg_off: int = 30, min_rgb_lo: int = 118,
                              green_gate: int = 26, max_cc_area: int = 200,
                              orig_green_min: int = 18,
-                             dist_max: int = 18) -> np.ndarray:
+                             dist_max: int = 18,
+                             orig_gray_min: int = 150) -> np.ndarray:
     """发光区内亮核吸收（668「新」字蒙版覆盖不全修复）。
 
     现象：绿晕把文字的孤立小部件（离主笔画 >方案B生长半径，668 实测 9.6~18.8px）
@@ -608,11 +609,17 @@ def _absorb_zone_bright_core(clean_rgb: np.ndarray, orig_rgb: np.ndarray,
     og = orig_rgb[..., 1].astype(np.int16)
     ob = orig_rgb[..., 2].astype(np.int16)
     orig_green = og - np.maximum(orr, ob)
+    # 原图亮度门: 文字部件在原图上就是白字亮核(668 白块 orig≈164、两横亮部
+    # 150+); 而「色块分界台阶」类背景结构亮度中等 —— 635(hist6635)灰带底边
+    # 小条(orig≈136, 距主蒙版仅6px, 距离门挡不住)被整条误吸收。orig≥150
+    # 实测: 635 上方小块 17→0px, 668 白块/两横覆盖几乎不变。
+    gorig = cv2.cvtColor(orig_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     cand = (cand_zone &
             (gray > (bg + bg_off)) &
             (min_rgb >= min_rgb_lo) &
             ((g - np.maximum(r, b)) < green_gate) &
-            (orig_green >= orig_green_min))
+            (orig_green >= orig_green_min) &
+            (gorig >= orig_gray_min))
     if not cand.any():
         return mask
     n, labels, stats, _ = cv2.connectedComponentsWithStats(cand.astype(np.uint8), 8)
