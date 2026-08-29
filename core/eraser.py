@@ -21,7 +21,8 @@ import cv2
 
 from core.text_select import (detect_text_mask, _deglow_faint_green,
                               _deglow_faint_green_v11, _deglow_full_green,
-                              _deglow_full_green_v2, _fill_bright_near_mask)
+                              _deglow_full_green_v2, _fill_bright_near_mask,
+                              _absorb_zone_bright_core)
 from core.patch_fill import inpaint as pm_inpaint
 
 
@@ -644,11 +645,12 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     )
 
     # 2) 先去发光(减绿度)：绿晕→中性灰, 返回去发光后的 clean 全图
-    clean, _ = _deglow_full_green_v2(
+    #    (同时取发光区 zone: 供步骤3b「亮核吸收」用)
+    clean, _, zone = _deglow_full_green_v2(
         rgb, tmask, strength=deglow_strength,
         zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
         protect_px=deglow_protect_px,
-        deglow_chroma_keep=deglow_chroma_keep)
+        deglow_chroma_keep=deglow_chroma_keep, return_zone=True)
 
     # 3) 普通去文字算法(非高亮路径):
     #    文字蒙版 = 原始图(白字 vs 绿背景对比强、漏检少, tint=False 不把光晕当字)
@@ -668,6 +670,11 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     # 只在去完发光的 clean 上生长: 光晕已减绿变暗, 不会被误吞; 绿度门进一步
     # 排除残余绿。在并集后跑保证 tmask/tm_clean 各自缺口都被补。
     mask = _fill_bright_near_mask(clean, mask)
+    # 3b) 发光区内亮核吸收: 绿晕隔开的文字孤立小部件(DBNet 漏框、距主蒙版
+    #     超过方案B生长半径、重建 detail 又保留其亮度) → 按「zone 内 + 亮于背景
+    #     + 近白中性 + 小连通块 + 原图带绿(被绿晕染过, 排除中性亮背景纹理)」
+    #     并入蒙版(668「新」白块)。
+    mask = _absorb_zone_bright_core(clean, rgb, mask, zone)
     if not mask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
                 "method": "ml", "boxes": [], "deglow_img": clean}

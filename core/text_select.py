@@ -554,6 +554,68 @@ def _fill_bright_near_mask(rgb: np.ndarray, mask: np.ndarray,
     return mask
 
 
+def _absorb_zone_bright_core(clean_rgb: np.ndarray, orig_rgb: np.ndarray,
+                             mask: np.ndarray, zone: np.ndarray,
+                             bg_off: int = 30, min_rgb_lo: int = 118,
+                             green_gate: int = 26, max_cc_area: int = 200,
+                             orig_green_min: int = 18) -> np.ndarray:
+    """发光区内亮核吸收（668「新」字蒙版覆盖不全修复）。
+
+    现象：绿晕把文字的孤立小部件（离主笔画 >方案B生长半径，668 实测 9.6~18.8px）
+    与主体隔开 —— DBNet 不框（Otsu 只在框内分割）、方案B 从蒙版只长 6px 够不着、
+    背景重建的 detail=(原图−σ2)×近字衰减 又把它当「背景细节」保留 → 去字后残留
+    8×6 白块。668 实测：clean 上 (R,G,B)≈(125,121,123)、gray≈122、绿度≈−4。
+
+    判定（亮度/近白/绿度在**去发光图**上）：落在发光区(zone)内、亮度显著高于
+    背景、近白、非绿的小连通块 → 并入蒙版交给 patch_fill 抹平：
+      - zone 约束：浅色块/远处光斑不在发光区内，天然隔离（防越界吞背景）；
+      - 亮度门 bg+bg_off：背景取 zone 外灰度 25 分位（暗背景自动放宽）；
+      - 近白门 min_rgb≥min_rgb_lo + 绿度门 <green_gate：与方案B 同语义，
+        只收「去发光后已变中性」的亮结构，排除残余绿晕；
+      - **原图绿度门 ≥orig_green_min**：真「被绿晕包裹/染色的文字部件」在原图上
+        带明显绿度（668 实测 +42）；而本来就中性的亮背景纹理（635 右上布纹，
+        原图绿度仅 +3~15）与发光无关，不得误吞 —— 该门是二者的分界
+        （18 时 635 误吞 54→7px，668 修复量不变）。
+      - 面积门 ≤max_cc_area：漏检的是「笔画部件」级小块；整片亮背景
+        （即使被 zone 外扩啃进一小条，也是大连通块）不会误吞。
+    以连通块为单位整体并入（而非逐像素），保证部件的暗 AA 边一并进填充区。
+    """
+    if not mask.any() or zone is None or not zone.any():
+        return mask
+    cand_zone = (zone > 0) & (mask == 0)
+    if not cand_zone.any():
+        return mask
+    gray = cv2.cvtColor(clean_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
+    outside = (mask == 0) & (zone == 0)
+    bg = float(np.percentile(gray[outside], 25)) if outside.sum() else 90.0
+    r = clean_rgb[..., 0].astype(np.int16)
+    g = clean_rgb[..., 1].astype(np.int16)
+    b = clean_rgb[..., 2].astype(np.int16)
+    min_rgb = np.minimum(np.minimum(r, g), b)
+    # 原图绿度: 文字部件被绿晕染色 → 原图 G−max(R,B) 明显; 中性亮背景 ≈0
+    orr = orig_rgb[..., 0].astype(np.int16)
+    og = orig_rgb[..., 1].astype(np.int16)
+    ob = orig_rgb[..., 2].astype(np.int16)
+    orig_green = og - np.maximum(orr, ob)
+    cand = (cand_zone &
+            (gray > (bg + bg_off)) &
+            (min_rgb >= min_rgb_lo) &
+            ((g - np.maximum(r, b)) < green_gate) &
+            (orig_green >= orig_green_min))
+    if not cand.any():
+        return mask
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cand.astype(np.uint8), 8)
+    absorb = np.zeros(cand.shape, bool)
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] <= max_cc_area:
+            absorb |= (labels == i)
+    if not absorb.any():
+        return mask
+    mask = mask.copy()
+    mask[absorb] = 255
+    return mask
+
+
 def _grow_color_tint(rgb: np.ndarray, mask: np.ndarray,
                      red_thr: int = 30, green_thr: int = 15,
                      green_g: int = 100, rounds_max: int = 120,
@@ -859,7 +921,8 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                           zone_expand: int = 24,
                           protect_px: int = 1,
                           deglow_chroma_keep: bool = False,
-                          debug: bool = False) -> tuple:
+                          debug: bool = False,
+                          return_zone: bool = False) -> tuple:
     """原型 v2：发光区用「真·alpha 分解」恢复底层纹理，mask 只收紧到高α核心+文字。
 
     与 _deglow_full_green(整片发光区 lerp→背景色平涂) 的根本区别：
@@ -881,14 +944,14 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     H, W = rgb.shape[:2]
     empty = np.zeros((H, W), np.uint8)
     if s <= 0:
-        return rgb, empty
+        return (rgb, empty, empty) if return_zone else (rgb, empty)
 
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
     green = (g - np.maximum(r, b) > g_thr) & (g > g_lo)
     # 种子放宽: 淡绿边缘(g-max 仅 4~14)也算强绿 → 让连通生长更靠近浅光外缘
     strong_green = (g - np.maximum(r, b) > 8) & (g > 95)
     if int(strong_green.sum()) < min_strong:        # 无强发光 → 普通图, 零改动
-        return rgb, empty
+        return (rgb, empty, empty) if return_zone else (rgb, empty)
 
     # 文字笔画: min 够亮 且 非强绿(白色文字 g 仅略高; 发光 g 明显主导)
     min_rgb = np.minimum(np.minimum(r, g), b)
@@ -934,7 +997,8 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     # 白字仍近白可检), 视觉上不再残留「文字边缘那圈绿」(用户反馈"外围还剩一点")。
     m_zone = zone
     if not m_zone.any():
-        return rgb, (tmask > 0).astype(np.uint8)
+        tm = (tmask > 0).astype(np.uint8)
+        return (rgb, tm, zone) if return_zone else (rgb, tm)
     greenness = np.maximum(g.astype(np.int16) - np.maximum(r, b), 0)  # 绿度, 非负
     Gn = out[m_zone, 1].astype(np.float32) - greenness[m_zone].astype(np.float32) * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
@@ -1002,6 +1066,8 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         dbg = dict(strong_green=strong_green, zone=zone, text_stroke=text_stroke,
                    m_zone=m_zone, greenness=greenness)
         return clean, core_mask, dbg
+    if return_zone:
+        return clean, core_mask, zone
     return clean, core_mask
 
 
