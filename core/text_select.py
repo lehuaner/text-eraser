@@ -1189,7 +1189,13 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
             a_map[fb] = a
             a_map = cv2.GaussianBlur(a_map, (0, 0), 1.5)   # 软过渡防跳变
             am = a_map[..., None]                          # (H,W,1)
-            rebuilt = rebuilt * (1 - am) + imgf * am
+            # 保留层只回贴 R/B 与「减绿后的 G」: 原图 G 含叠加的绿光, 整 3 通道
+            # 回贴会把绿晕原样带回保留区(668 实测: 黄条残留绿度 +9~14, 同行
+            # 非保留像素仅 +1, 可见色差)。减绿只动 G, 黄条色相由 R−B 决定、
+            # 亮度纹理在 R/B 与减绿不掉的高频里 → 结构不受影响, 绿光不回贴。
+            keep_layer = imgf.copy()
+            keep_layer[..., 1] = out[..., 1]               # G 用减绿后的值
+            rebuilt = rebuilt * (1 - am) + keep_layer * am
         for c in range(3):
             out[..., c] = np.where(fb, rebuilt[..., c].astype(np.int16),
                                    out[..., c])

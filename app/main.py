@@ -239,7 +239,7 @@ async def erase(
     deglow_zone_ratio: float = Form(0.6),
     deglow_zone_expand: int = Form(10),
     deglow_protect_px: int = Form(1),
-    deglow_chroma_keep: bool = Form(False),
+    deglow_chroma_keep: bool = Form(True),
     # 唯一去发光算法 = v2(减绿度去发光 → 非高亮算法去字); "off" = 关闭去发光
     deglow_scheme: str = Form("v2"),
     fill_white: bool = Form(True),
