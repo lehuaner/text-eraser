@@ -15,8 +15,8 @@ import numpy as np
 import cv2
 
 sys.path.insert(0, ".")
-from core.eraser import _ellipse
-from core.text_select import detect_text_mask
+from textpatch.eraser import _ellipse
+from textpatch.text_select import detect_text_mask
 
 DEFAULTS = dict(
     q_off=55.0, max_area_ratio=0.40, max_box_ratio=0.40,

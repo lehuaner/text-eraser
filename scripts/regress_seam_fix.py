@@ -33,7 +33,7 @@ spec = importlib.util.spec_from_file_location("text_select_old", OLD_PATH)
 old_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(old_mod)
 
-import core.eraser as eraser  # noqa: E402
+import textpatch.eraser as eraser  # noqa: E402
 new_fn = eraser._deglow_full_green_v2
 
 PARAM_KEYS = ["edge", "q_off", "max_area_ratio", "max_box_ratio", "direction",

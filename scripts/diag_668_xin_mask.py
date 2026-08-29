@@ -12,8 +12,8 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.text_select import detect_text_mask, _deglow_full_green_v2, _fill_bright_near_mask
-from core.eraser import erase_text
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2, _fill_bright_near_mask
+from textpatch.eraser import erase_text
 
 rgb = np.array(Image.open(f"{ROOT}/data/_glowcheck/668.png").convert("RGB"))
 H, W = rgb.shape[:2]

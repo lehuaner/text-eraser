@@ -1,15 +1,16 @@
 """
 文字模式 - 轻量 ML 引擎 (DBNet, PP-OCRv4 det).
 
-与 core/text_select.py 的经典 CV 检测接口一致, 输出 [{x0,y0,x1,y1}] (原图坐标).
-首次调用时若模型不存在, 自动从 HuggingFace 拉到 core/models/det/ (~5MB).
+与 text_select.py 的经典 CV 检测接口一致, 输出 [{x0,y0,x1,y1}] (原图坐标).
+首次调用时若模型不存在, 自动从 HuggingFace 下载 (~5MB, 仓库 checkout 落在
+textpatch/models/det/, pip 安装落在 ~/.textpatch/models/det/).
 
 为何选这个模型:
   * PP-OCRv4 det = DBNet++ + MobileNetV3 骨干, Apache-2.0;
   * 检测阶段语言无关 (中英日韩皆可), 不依赖识别器;
   * ONNX 4.7MB, CPU 推理 0.08s/图 (4096x2160), 满足"轻量"要求.
 
-依赖: onnxruntime + cv2 + numpy (项目已有). 不引新 pip 依赖.
+依赖: onnxruntime + cv2 + numpy (见 pyproject/requirements).
 """
 from __future__ import annotations
 
@@ -29,7 +30,20 @@ _ort = None
 # 模型路径与下载
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL_DIR = os.path.join(_HERE, "models", "det")
+
+
+def _default_model_dir() -> str:
+    """仓库 checkout 用包内 models/det（保留已下载模型）; pip 安装落到用户目录
+    （site-packages 未必可写）。可用环境变量 TEXTPATCH_MODEL_DIR 覆盖。"""
+    env = os.environ.get("TEXTPATCH_MODEL_DIR")
+    if env:
+        return env
+    if os.path.isdir(os.path.join(os.path.dirname(_HERE), "data")):
+        return os.path.join(_HERE, "models", "det")
+    return os.path.join(os.path.expanduser("~"), ".textpatch", "models", "det")
+
+
+MODEL_DIR = _default_model_dir()
 MODEL_PATH = os.path.join(MODEL_DIR, "ch_PP-OCRv4_det.onnx")
 # HuggingFace Heliosoph/paddleocr-v4-det-onnx (Apache-2.0)
 MODEL_URL = (
@@ -73,10 +87,8 @@ def ensure_model() -> str:
             return MODEL_PATH
         os.makedirs(MODEL_DIR, exist_ok=True)
         ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
         req = urllib.request.Request(
-            MODEL_URL, headers={"User-Agent": "Mozilla/5.0"}
+            MODEL_URL, headers={"User-Agent": "textpatch/" + __import__("textpatch").__version__}
         )
         tmp = MODEL_PATH + ".part"
         try:
@@ -177,7 +189,7 @@ def detect_text_ml(
       max_side: resize 后最长边像素 (32 的倍数). 越大越慢但小字召回越好.
       pad: 框外扩像素 (原图坐标).
     """
-    from core.text_select import to_rgb_uint8
+    from textpatch.text_select import to_rgb_uint8
 
     rgb = to_rgb_uint8(raw)
     H, W = rgb.shape[:2]
@@ -255,8 +267,8 @@ def detect_text_mask_ml(
       * 用更高阈值(mask_threshold)取概率核心 -> 排除 halo 与字符粘连；
       * 仅做 2x2 极小闭运算修复笔画内断口, 不复用框检测的 3x3 膨胀(那会连字)。
     """
-    from core.text_select import to_rgb_uint8
-    from core import text_select as _ts
+    from textpatch.text_select import to_rgb_uint8
+    from textpatch import text_select as _ts
 
     rgb = to_rgb_uint8(raw)
     H, W = rgb.shape[:2]

@@ -10,7 +10,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 
 rgb = np.array(Image.open(f"{ROOT}/data/_glowcheck/556.png").convert("RGB"))
 res, m, meta = erase_text(

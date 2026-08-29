@@ -9,7 +9,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 
 IMGS = {
     "武器": Path("D:/Code/Project/Python/ExtractRole/data/needExtractAndPatch.png"),

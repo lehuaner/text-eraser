@@ -8,8 +8,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.text_select import detect_text_mask
-from core.patch_fill import inpaint as pm_inpaint
+from textpatch.text_select import detect_text_mask
+from textpatch.patch_fill import inpaint as pm_inpaint
 
 IMG = r"D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png"
 OUT = r"D:\Code\Project\Python\TextPatch\data\dryrun_out"

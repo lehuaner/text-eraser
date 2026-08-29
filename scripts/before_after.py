@@ -40,7 +40,7 @@ draw.text((gap, gap*2+H*2+2), "NEW: 2px dil + sample_mask → 干净, 纹理自�
 ys_, xs_ = np.where(np.array(Image.open(IMG).convert("L")) < 200)  # 简化
 # 用 DBNet mask 更准
 import sys; sys.path.insert(0, r"D:\Code\Project\Python\TextPatch")
-from core.text_select import detect_text_mask
+from textpatch.text_select import detect_text_mask
 mask_tight, _ = detect_text_mask(rgb, method="ml", q_off=70, max_area_ratio=0.40)
 ys_, xs_ = np.where(mask_tight > 0)
 y0, y1 = max(0, ys_.min()-10), min(H, ys_.max()+10)

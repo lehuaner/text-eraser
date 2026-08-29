@@ -9,8 +9,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core.text_select import to_rgb_uint8, detect_text_mask, detect_text, _detect_text_mask_classic
-from core.ml_text_select import detect_text_mask_ml, _dbnet_infer, detect_text_ml, _get_session
+from textpatch.text_select import to_rgb_uint8, detect_text_mask, detect_text, _detect_text_mask_classic
+from textpatch.ml_text_select import detect_text_mask_ml, _dbnet_infer, detect_text_ml, _get_session
 
 P = ROOT / "data" / "needExtractAndPatch2.png"
 rgb = to_rgb_uint8(Image.open(P))

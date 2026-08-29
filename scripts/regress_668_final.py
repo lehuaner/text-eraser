@@ -11,8 +11,8 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.eraser import erase_text
-from core.text_select import detect_text_mask, _deglow_full_green_v2
+from textpatch.eraser import erase_text
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
 
 def load(tag):
     return np.array(Image.open(f"{ROOT}/data/_glowcheck/{tag}.png").convert("RGB"))

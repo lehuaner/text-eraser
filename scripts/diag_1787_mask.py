@@ -12,7 +12,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.text_select import (detect_text_mask, _deglow_full_green_v2,
+from textpatch.text_select import (detect_text_mask, _deglow_full_green_v2,
                               _fill_bright_near_mask, _absorb_zone_bright_core)
 
 rgb = np.array(Image.open(f"{ROOT}/data/history/1787767429309/orig.bin").convert("RGB"))

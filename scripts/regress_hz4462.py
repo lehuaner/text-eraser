@@ -10,8 +10,8 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.eraser import erase_text
-from core.text_select import detect_text_mask
+from textpatch.eraser import erase_text
+from textpatch.text_select import detect_text_mask
 
 def run(path):
     rgb = np.array(Image.open(path).convert("RGB"))

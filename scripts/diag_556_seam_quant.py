@@ -9,7 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from core.text_select import detect_text_mask, _deglow_full_green_v2  # noqa: E402
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2  # noqa: E402
 
 HID = "1787822778556"
 raw = (ROOT / "data" / "history" / HID / "orig.bin").read_bytes()

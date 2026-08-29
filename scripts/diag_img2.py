@@ -3,8 +3,8 @@ import sys, time
 sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
 import numpy as np, cv2
 from PIL import Image
-from core.text_select import detect_text_mask, to_rgb_uint8
-from core.patch_fill import inpaint as pm_inpaint
+from textpatch.text_select import detect_text_mask, to_rgb_uint8
+from textpatch.patch_fill import inpaint as pm_inpaint
 
 P = r'D:\Code\Project\Python\TextPatch\data\needExtractAndPatch2.png'
 rgb = to_rgb_uint8(Image.open(P).convert('RGB'))

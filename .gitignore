@@ -2,11 +2,18 @@
 __pycache__/
 *.pyc
 
+# 打包产物
+dist/
+build/
+*.egg-info/
+.venv/
+
 # 运行/测试产物
 data/
 *.bin
 
 # 下载的模型文件（自动下载，勿入库）
-core/models/det/*.onnx
+textpatch/models/det/*.onnx
+
 # 工具记忆
 .workbuddy/

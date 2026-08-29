@@ -7,7 +7,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from core import ml_text_select as _ml
+from textpatch import ml_text_select as _ml
 
 img = np.asarray(Image.open(ROOT / "data/needExtractAndPatch.png").convert("RGB"), dtype=np.uint8)
 H, W = img.shape[:2]

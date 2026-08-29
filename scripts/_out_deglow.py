@@ -5,7 +5,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.text_select import detect_text_mask, _deglow_full_green_v2
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
 
 TAGS = ["178", "556", "635", "668"]
 

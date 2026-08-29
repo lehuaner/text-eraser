@@ -6,8 +6,8 @@ import numpy as np
 from PIL import Image
 import cv2
 
-from core.text_select import detect_text_mask, _deglow_full_green_v2
-from core.eraser import erase_text
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
+from textpatch.eraser import erase_text
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 DIAG = os.path.join(ROOT, "data/_diag"); os.makedirs(DIAG, exist_ok=True)

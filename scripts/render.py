@@ -6,7 +6,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 
 img = np.asarray(Image.open(ROOT / "data/needExtractAndPatch.png").convert("RGB"), dtype=np.uint8)
 result, mask, meta = erase_text(img, return_mask=True)

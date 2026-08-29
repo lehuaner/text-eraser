@@ -11,7 +11,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.text_select import detect_text_mask, _detect_text_mask_classic, _deglow_full_green_v2, _fill_bright_near_mask
+from textpatch.text_select import detect_text_mask, _detect_text_mask_classic, _deglow_full_green_v2, _fill_bright_near_mask
 
 rgb = np.array(Image.open(f"{ROOT}/data/_glowcheck/668.png").convert("RGB"))
 kw = dict(method="ml", q_off=55.0, max_area_ratio=0.40, max_box_ratio=0.40,
@@ -41,7 +41,7 @@ print("in tmask:", int((tmask[hole] > 0).sum()), "/", hole.sum(),
       " in brightB:", int((bright[hole] > 0).sum()))
 
 # DBNet 框定位(用 detect_text 的框)
-from core.text_select import detect_text
+from textpatch.text_select import detect_text
 boxes = detect_text(rgb, strength=1.0, method="ml", max_area_ratio=0.40,
                     max_box_ratio=0.40, work_max=1280, max_side=1280, min_area=30)
 hit = [(bx, by, bx2, by2) for (bx, by, bx2, by2) in

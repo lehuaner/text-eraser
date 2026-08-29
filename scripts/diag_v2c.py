@@ -3,7 +3,7 @@ sys.path.insert(0, "D:/Code/Project/Python/TextPatch")
 import numpy as np
 from PIL import Image
 import cv2
-from core.text_select import detect_text_mask, _deglow_full_green_v2
+from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 

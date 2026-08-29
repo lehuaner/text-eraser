@@ -8,8 +8,8 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from core.eraser import erase_text
-from core.patch_fill import inpaint as pm_inpaint
+from textpatch.eraser import erase_text
+from textpatch.patch_fill import inpaint as pm_inpaint
 
 def load(p):
     return np.array(Image.open(p).convert("RGB"))
@@ -45,7 +45,7 @@ for tag in ["178", "556", "635", "668"]:
         return_mask=True, tint_fill=True)
     gres = cv2.cvtColor(r2, cv2.COLOR_RGB2GRAY).astype(np.float32)
     gorg = cv2.cvtColor(im, cv2.COLOR_RGB2GRAY).astype(np.float32)
-    from core.text_select import detect_text_mask
+    from textpatch.text_select import detect_text_mask
     tm, _ = detect_text_mask(im, method="ml", tint_fill=False,
                              max_area_ratio=0.40, q_off=55,
                              fill_white=True, fill_max_dist=12)

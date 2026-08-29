@@ -18,7 +18,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 
 SRC = ROOT / "data" / "needExtractAndPatch.png"
 OUT_DIR = ROOT / "data" / "result"

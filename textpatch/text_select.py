@@ -66,7 +66,7 @@ def detect_text(raw: np.ndarray | "Image.Image",
                      下载一次后离线可用, 之后 ~0.08s/张 (4096x2160, CPU).
     """
     if method == "ml":
-        from core import ml_text_select as _ml
+        from textpatch import ml_text_select as _ml
         return _ml.detect_text_ml(
             raw, strength=strength,
             min_area=min_area,

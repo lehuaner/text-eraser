@@ -4,7 +4,7 @@ import numpy as np
 import cv2
 
 sys.path.insert(0, ".")
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 
 DEFAULTS = dict(
     q_off=55.0, max_area_ratio=0.40, max_box_ratio=0.40,

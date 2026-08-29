@@ -19,11 +19,11 @@ import time
 import numpy as np
 import cv2
 
-from core.text_select import (detect_text_mask, _deglow_faint_green,
+from textpatch.text_select import (detect_text_mask, _deglow_faint_green,
                               _deglow_faint_green_v11, _deglow_full_green,
                               _deglow_full_green_v2, _fill_bright_near_mask,
                               _absorb_zone_bright_core)
-from core.patch_fill import inpaint as pm_inpaint
+from textpatch.patch_fill import inpaint as pm_inpaint
 
 
 def _ellipse(p: int) -> np.ndarray:
@@ -755,7 +755,13 @@ def _erase_v4_deglow(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     )
 
     # 2) 通用去发光（v4 管线；strength=0 即纯保护路径）
-    from deglow import pipeline as v4_pipeline
+    try:
+        from deglow import pipeline as v4_pipeline
+    except ImportError as e:
+        raise RuntimeError(
+            "deglow_scheme='v4' 需要完整仓库（实验性 deglow/ 模块不随 pip 包发布）；"
+            "请改用默认的 v2 方案，或 git clone 仓库后使用"
+        ) from e
     res = v4_pipeline.run(rgb, carrier_mask=tmask,
                           deglow_strength=deglow_strength)
     clean = np.clip(res.image, 0, 255).astype(np.uint8)

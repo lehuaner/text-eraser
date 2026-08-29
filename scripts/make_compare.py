@@ -29,7 +29,7 @@ def strip(panels, title, out):
 orig1 = load(r'D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png')
 orig2 = load(r'D:\Code\Project\Python\TextPatch\data\needExtractAndPatch2.png')
 # 默认结果（重新跑以保证一致）
-from core.eraser import erase_text
+from textpatch.eraser import erase_text
 def1, _, _ = erase_text(orig1, return_mask=True)
 def2, _, _ = erase_text(orig2, return_mask=True)
 dir60_1 = load(r'D:\Code\Project\Python\TextPatch\data\result\needExtractAndPatch_dir60.png')
