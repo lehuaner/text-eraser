@@ -3,10 +3,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# PyPI 发行名: text-eraser (textpatch 与既有 text-patch 过于相似被 PyPI 拒绝)
-# import 包名: textpatch
+# PyPI 发行名: text-eraser (原名 textpatch 与既有 text-patch 过于相似被 PyPI 拒绝)
+# import 包名: text_eraser
 name = "text-eraser"
-version = "0.1.0"
+version = "0.1.1"
 description = "图片文字擦除工具：DBNet 文字检测 + PatchMatch 内容识别填充 + 去发光，附本地 Web 界面"
 readme = "README.md"
 license = { text = "MIT" }
@@ -41,19 +41,19 @@ dependencies = [
 dev = ["pytest>=8.0", "build>=1.0", "twine>=5.0"]
 
 [project.urls]
-Homepage = "https://github.com/lehuaner/TextPatch"
-Repository = "https://github.com/lehuaner/TextPatch"
-Issues = "https://github.com/lehuaner/TextPatch/issues"
+Homepage = "https://github.com/lehuaner/text-eraser"
+Repository = "https://github.com/lehuaner/text-eraser"
+Issues = "https://github.com/lehuaner/text-eraser/issues"
 
 [project.scripts]
-textpatch = "textpatch.webapp:main"
+text-eraser = "text_eraser.webapp:main"
 
 [tool.setuptools.packages.find]
-include = ["textpatch*"]
+include = ["text_eraser*"]
 exclude = ["deglow*", "scripts*", "tests*"]
 
 [tool.setuptools.package-data]
-textpatch = ["static/**/*", "assets/*"]
+text_eraser = ["static/**/*", "assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

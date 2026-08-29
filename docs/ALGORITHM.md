@@ -1,7 +1,7 @@
-# TextPatch 文字擦除算法说明（函数级 / 文件级调用指南）
+# Text Eraser 文字擦除算法说明（函数级 / 文件级调用指南）
 
 > 阅读对象：需要在**代码里直接调用**本项目的 AI / 开发者（不经过 FastAPI）。
-> 全文以 **Python import + 函数调用** 为准；Web 端只是 `core/eraser.py` 的一个薄封装。
+> 全文以 **Python import + 函数调用** 为准；Web 端只是 `text_eraser/eraser.py` 的一个薄封装。
 > 语言惯例：参数/函数名保持英文原文，说明用中文。
 
 ---
@@ -10,12 +10,12 @@
 
 | 文件 | 提供 | 依赖 |
 |---|---|---|
-| `core/eraser.py` | **管线级入口** `erase_text()`（测全流程用这一个就够） | text_select + patch_fill |
-| `core/text_select.py` | 蒙版/检测：`detect_text_mask()`、`detect_text()`、`_detect_text_mask_classic()`、`_fill_nearby_white()`、`_clean_text_mask()`、`_mask_to_boxes()`、`to_rgb_uint8()` | classic 路径零依赖；ml 路径内部按需 import ml_text_select |
-| `core/ml_text_select.py` | DBNet 推理：`detect_text_ml()`、`detect_text_mask_ml()`、`_dbnet_infer()`、`ensure_model()`/`is_model_available()` | onnxruntime（Lazy），模型自动下载 ~5MB |
-| `core/patch_fill.py` | 内容识别填充：`inpaint()`（可独立用于去水印/杂物，不限于文字） | numpy + cv2 |
+| `text_eraser/eraser.py` | **管线级入口** `erase_text()`（测全流程用这一个就够） | text_select + patch_fill |
+| `text_eraser/text_select.py` | 蒙版/检测：`detect_text_mask()`、`detect_text()`、`_detect_text_mask_classic()`、`_fill_nearby_white()`、`_clean_text_mask()`、`_mask_to_boxes()`、`to_rgb_uint8()` | classic 路径零依赖；ml 路径内部按需 import ml_text_select |
+| `text_eraser/ml_text_select.py` | DBNet 推理：`detect_text_ml()`、`detect_text_mask_ml()`、`_dbnet_infer()`、`ensure_model()`/`is_model_available()` | onnxruntime（Lazy），模型自动下载 ~5MB |
+| `text_eraser/patch_fill.py` | 内容识别填充：`inpaint()`（可独立用于去水印/杂物，不限于文字） | numpy + cv2 |
 
-> 注意：`core/text_select.py` 里有 **DBNet 检测框默认回退 `max_area_ratio=0.05`**，见 §6 坑 1。
+> 注意：`text_eraser/text_select.py` 里有 **DBNet 检测框默认回退 `max_area_ratio=0.05`**，见 §6 坑 1。
 
 ---
 
@@ -25,9 +25,9 @@
 import numpy as np
 import cv2
 from PIL import Image
-from core.eraser import erase_text
-from core.text_select import to_rgb_uint8, detect_text_mask
-from core.patch_fill import inpaint
+from text_eraser.eraser import erase_text
+from text_eraser.text_select import to_rgb_uint8, detect_text_mask
+from text_eraser.patch_fill import inpaint
 
 # ---- A. 全流程一步出结果（推荐） ----
 rgb = to_rgb_uint8(Image.open("demo.png"))          # HxWx3 uint8 RGB
@@ -54,7 +54,7 @@ Image.fromarray(filled).save("removed.png")
 
 ## 3. 函数 API 详解
 
-### 3.1 `core/eraser.py::erase_text`（管线级，唯一业务入口）
+### 3.1 `text_eraser/eraser.py::erase_text`（管线级，唯一业务入口）
 
 ```python
 def erase_text(
@@ -74,7 +74,7 @@ def erase_text(
 
 管线内部 = `detect_text_mask(method="ml", …)` → `dilate/erode(mask, ellipse(edge))`（移动边缘，>0 膨胀/<0 腐蚀）→ `sample_mask=整图−膨胀蒙版` → `patch_fill.inpaint(...)`。展示蒙版即真实填充区（移动边缘后），所见即所得。
 
-### 3.2 `core/text_select.py`（检测 + 蒙版）
+### 3.2 `text_eraser/text_select.py`（检测 + 蒙版）
 
 ```python
 def detect_text_mask(raw, strength=1.0, method="ml",
@@ -103,7 +103,7 @@ def _mask_to_boxes(mask): -> list[dict]
 def to_rgb_uint8(raw): -> HxWx3 uint8
 ```
 
-### 3.3 `core/ml_text_select.py`（DBNet）
+### 3.3 `text_eraser/ml_text_select.py`（DBNet）
 
 ```python
 def is_model_available() -> bool                 # 模型文件是否就绪
@@ -120,7 +120,7 @@ def _dbnet_infer(rgb, strength, box_threshold, max_side):
     """-> (prob, nw, nh, H, W, thr)。概率图 HxW float32，可自行取阈值。"""
 ```
 
-### 3.4 `core/patch_fill.py::inpaint`（填充器，可独立复用）
+### 3.4 `text_eraser/patch_fill.py::inpaint`（填充器，可独立复用）
 
 ```python
 def inpaint(image_rgb, mask,

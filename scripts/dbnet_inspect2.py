@@ -9,14 +9,14 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import to_rgb_uint8
+from text_eraser.text_select import to_rgb_uint8
 
 img_path = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "data" / "needExtractAndPatch2.png")
 rgb = to_rgb_uint8(Image.open(img_path).convert("RGB"))
 H, W = rgb.shape[:2]
 print(f"image = {W}x{H}")
 
-from textpatch.ml_text_select import _dbnet_infer, detect_text_ml, _get_session
+from text_eraser.ml_text_select import _dbnet_infer, detect_text_ml, _get_session
 sess = _get_session()
 print(f"providers = {sess.get_providers()}")
 prob, nw, nh, H, W, thr = _dbnet_infer(rgb, 1.0, 0.3, 960)

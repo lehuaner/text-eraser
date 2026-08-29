@@ -8,8 +8,8 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from textpatch.eraser import erase_text
-from textpatch.text_select import detect_text_mask
+from text_eraser.eraser import erase_text
+from text_eraser.text_select import detect_text_mask
 
 def load(tag):
     return np.array(Image.open(f"{ROOT}/data/_glowcheck/{tag}.png").convert("RGB"))

@@ -1,7 +1,7 @@
 import sys; sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from textpatch.text_select import detect_text_mask
+from text_eraser.text_select import detect_text_mask
 
 orig = np.asarray(Image.open(r'D:\Code\Project\Python\TextPatch\data\needExtractAndPatch2.png').convert('RGB'))
 def_ = np.asarray(Image.open(r'D:\Code\Project\Python\TextPatch\data\result\needExtractAndPatch2_F_default.png').convert('RGB'))

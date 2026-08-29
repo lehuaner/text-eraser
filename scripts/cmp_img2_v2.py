@@ -6,7 +6,7 @@ orig = np.asarray(Image.open(r'D:\Code\Project\Python\TextPatch\data\needExtract
 def1 = np.asarray(Image.open(r'D:\Code\Project\Python\TextPatch\data\result\needExtractAndPatch2_v2_default.png').convert('RGB'))
 d60  = np.asarray(Image.open(r'D:\Code\Project\Python\TextPatch\data\result\needExtractAndPatch2_v2_dir60.png').convert('RGB'))
 # 用 DBNet 检出的 bbox 裁剪
-from textpatch.text_select import detect_text_mask
+from text_eraser.text_select import detect_text_mask
 m, _ = detect_text_mask(orig, method='ml', q_off=70.0, max_area_ratio=0.40, max_box_ratio=0.40)
 ys, xs = np.where(m>0)
 y0,y1,x0,x1 = ys.min(), ys.max()+1, xs.min(), xs.max()+1

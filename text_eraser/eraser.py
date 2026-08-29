@@ -19,11 +19,11 @@ import time
 import numpy as np
 import cv2
 
-from textpatch.text_select import (detect_text_mask, _deglow_faint_green,
+from text_eraser.text_select import (detect_text_mask, _deglow_faint_green,
                               _deglow_faint_green_v11, _deglow_full_green,
                               _deglow_full_green_v2, _fill_bright_near_mask,
                               _absorb_zone_bright_core)
-from textpatch.patch_fill import inpaint as pm_inpaint
+from text_eraser.patch_fill import inpaint as pm_inpaint
 
 
 def _ellipse(p: int) -> np.ndarray:

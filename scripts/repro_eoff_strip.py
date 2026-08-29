@@ -8,7 +8,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from textpatch.eraser import erase_text
+from text_eraser.eraser import erase_text
 
 ORIG = Path("D:/Code/Project/Python/ExtractRole/data/needExtractAndPatch.png")
 TARGET = ROOT / "data" / "diag_root" / "needExtractAndPatch_result_eoff.png"

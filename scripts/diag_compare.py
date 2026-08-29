@@ -9,8 +9,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import to_rgb_uint8, detect_text_mask
-from textpatch.eraser import erase_text
+from text_eraser.text_select import to_rgb_uint8, detect_text_mask
+from text_eraser.eraser import erase_text
 
 for name in ['needExtractAndPatch.png', 'needExtractAndPatch2.png']:
     p = ROOT / "data" / name

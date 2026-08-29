@@ -18,8 +18,8 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import detect_text_mask, _geodesic_background  # noqa: E402
-import textpatch.eraser as eraser  # noqa: E402
+from text_eraser.text_select import detect_text_mask, _geodesic_background  # noqa: E402
+import text_eraser.eraser as eraser  # noqa: E402
 
 OLD = ROOT / "data" / "_diag556seam" / "_text_select_old.py"
 OLD.write_text(

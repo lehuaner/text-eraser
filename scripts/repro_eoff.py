@@ -8,7 +8,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from textpatch.eraser import erase_text
+from text_eraser.eraser import erase_text
 
 # --- 目标图（4x 放大版） ---
 EOFF_4X = ROOT / "data" / "diag_root" / "needExtractAndPatch_result_eoff.png"

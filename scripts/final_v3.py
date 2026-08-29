@@ -9,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import to_rgb_uint8
-from textpatch.eraser import erase_text
+from text_eraser.text_select import to_rgb_uint8
+from text_eraser.eraser import erase_text
 
 def font():
     try: return ImageFont.truetype('C:/Windows/Fonts/msyh.ttc', 14)

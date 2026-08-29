@@ -19,8 +19,8 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import detect_text_mask  # noqa: E402
-from textpatch.patch_fill import inpaint            # noqa: E402
+from text_eraser.text_select import detect_text_mask  # noqa: E402
+from text_eraser.patch_fill import inpaint            # noqa: E402
 
 
 def run(input_path: Path, out_dir: Path, method: str = "classic", q_off: float = 50.0):

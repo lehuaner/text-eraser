@@ -2,7 +2,7 @@ import sys, time
 sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
 import numpy as np, cv2
 from PIL import Image
-from textpatch.eraser import erase_text
+from text_eraser.eraser import erase_text
 
 for name in ['needExtractAndPatch.png', 'needExtractAndPatch2.png']:
     path = r'D:\Code\Project\Python\TextPatch\data\\' + name

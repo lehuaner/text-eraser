@@ -1,4 +1,4 @@
-"""textpatch 包级冒烟测试（全部合成图，不依赖仓库内样图与历史数据）。"""
+"""text_eraser 包级冒烟测试（全部合成图，不依赖仓库内样图与历史数据）。"""
 from __future__ import annotations
 
 import numpy as np
@@ -16,10 +16,10 @@ def _synthetic_rgb(w=320, h=200, seed=7) -> np.ndarray:
 
 
 def test_version_and_exports():
-    import textpatch
-    assert textpatch.__version__
-    for name in textpatch.__all__:
-        assert hasattr(textpatch, name), name
+    import text_eraser
+    assert text_eraser.__version__
+    for name in text_eraser.__all__:
+        assert hasattr(text_eraser, name), name
 
 
 def test_patch_fill_inpaints_hole():
@@ -30,7 +30,7 @@ def test_patch_fill_inpaints_hole():
     rgb_hole = rgb.copy()
     rgb_hole[hole > 0] = (0, 0, 0)
 
-    from textpatch import inpaint
+    from text_eraser import inpaint
     filled = inpaint(rgb_hole, hole, sample_mask=(255 - hole))
 
     center = filled[95:105, 150:170].astype(float)
@@ -40,7 +40,7 @@ def test_patch_fill_inpaints_hole():
 
 def test_detect_text_mask_classic_synthetic():
     """经典路径：合成图上大块非文字区域不应被当成文字。"""
-    from textpatch import detect_text_mask
+    from text_eraser import detect_text_mask
     rgb = _synthetic_rgb()
     mask, _ = detect_text_mask(rgb, method="classic",
                                max_area_ratio=0.40, max_box_ratio=0.40)
@@ -53,9 +53,9 @@ def test_detect_text_mask_classic_synthetic():
 def test_erase_text_end_to_end():
     """全流程冒烟：中央大字块被擦除且不残留白色（ml 路径，模型缺失则跳过）。"""
     pytest.importorskip("onnxruntime")
-    from textpatch import erase_text
+    from text_eraser import erase_text
     try:
-        from textpatch.ml_text_select import get_model_path
+        from text_eraser.ml_text_select import get_model_path
         get_model_path()
     except Exception as e:  # 离线/网络受限环境: 跳过而非失败
         pytest.skip(f"DBNet model unavailable: {e}")

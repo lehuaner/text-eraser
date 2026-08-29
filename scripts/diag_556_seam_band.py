@@ -19,7 +19,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from textpatch.text_select import detect_text_mask, _deglow_full_green_v2, _geodesic_background  # noqa: E402
+from text_eraser.text_select import detect_text_mask, _deglow_full_green_v2, _geodesic_background  # noqa: E402
 
 OUT = ROOT / "data" / "_diag556seam"
 OUT.mkdir(parents=True, exist_ok=True)
@@ -150,7 +150,7 @@ def instrumented(rgb, tmask, strength=1.0, alpha_core=0.65, zone_ratio=0.6,
     cap["fb"] = fb.copy()
     rebuilt = None
     if fb.any() and zone.sum() < 0.8 * Hh * Ww and B is not None:
-        from textpatch.text_select import _harmonic_background
+        from text_eraser.text_select import _harmonic_background
         if d_warm > 0:
             _init = None
             if D_rg is not None:

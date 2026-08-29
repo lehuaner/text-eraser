@@ -4,7 +4,7 @@
 import os, io
 import numpy as np
 from PIL import Image
-from textpatch.eraser import erase_text
+from text_eraser.eraser import erase_text
 
 OUT = "data/_glowcheck"
 os.makedirs(OUT, exist_ok=True)

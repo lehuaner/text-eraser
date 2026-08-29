@@ -1,8 +1,8 @@
 import sys; sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
 import numpy as np, cv2
 from PIL import Image, ImageDraw, ImageFont
-from textpatch.eraser import erase_text
-from textpatch.text_select import detect_text_mask
+from text_eraser.eraser import erase_text
+from text_eraser.text_select import detect_text_mask
 
 def load(p): return np.asarray(Image.open(p).convert('RGB'))
 def zoom8(im): return Image.fromarray(im).resize((im.shape[1]*8, im.shape[0]*8), Image.NEAREST)

@@ -6,7 +6,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from textpatch.patch_fill import inpaint
+from text_eraser.patch_fill import inpaint
 
 img = np.asarray(Image.open(ROOT / "data/needExtractAndPatch.png").convert("RGB"), dtype=np.uint8)
 H, W = img.shape[:2]
@@ -18,7 +18,7 @@ print("isolated test saved")
 
 # 测试：用 DBNet 实际产出的 mask（已知正确）
 sys.path.insert(0, str(ROOT))
-from textpatch.text_select import detect_text_mask
+from text_eraser.text_select import detect_text_mask
 mask2, _ = detect_text_mask(img, method="ml", max_area_ratio=0.40, q_off=70)
 print(f"mask2 white pixels = {int(mask2.sum()//255)}")
 result2 = inpaint(img, mask2)

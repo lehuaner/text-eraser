@@ -17,7 +17,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from textpatch.text_select import (detect_text_mask, _deglow_full_green_v2,
+from text_eraser.text_select import (detect_text_mask, _deglow_full_green_v2,
                               _fill_bright_near_mask)
 
 IMGS = [

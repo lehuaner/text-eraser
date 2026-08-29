@@ -2,8 +2,8 @@
 import cv2
 import numpy as np
 
-from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
-from textpatch.eraser import _erase_deglow_v2, _run_fill
+from text_eraser.text_select import detect_text_mask, _deglow_full_green_v2
+from text_eraser.eraser import _erase_deglow_v2, _run_fill
 
 
 def load(p):
@@ -56,7 +56,7 @@ def main():
     cv2.rectangle(img, (8, 8), (24, 9), (235, 238, 230), -1)
     cv2.rectangle(img, (20, 8), (21, 13), (235, 238, 230), -1)
     boxes = [{"x0": 2, "y0": 2, "x1": W - 2, "y1": H - 2}]
-    from textpatch.text_select import _detect_text_mask_classic, _fill_bright_near_mask
+    from text_eraser.text_select import _detect_text_mask_classic, _fill_bright_near_mask
     m_off = _detect_text_mask_classic(img, boxes=boxes, upscale=False)
     m_a = _detect_text_mask_classic(img, boxes=boxes, upscale=True)
     m_ab = _fill_bright_near_mask(img, m_a)

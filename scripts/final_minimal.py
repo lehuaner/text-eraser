@@ -14,8 +14,8 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from textpatch.text_select import detect_text_mask
-from textpatch.patch_fill import inpaint as pm_inpaint
+from text_eraser.text_select import detect_text_mask
+from text_eraser.patch_fill import inpaint as pm_inpaint
 
 IMG = r"D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png"
 OUT = r"D:\Code\Project\Python\TextPatch\data\result"

@@ -1,6 +1,6 @@
-# TextPatch
+# Text Eraser
 
-[![CI](https://github.com/lehuaner/TextPatch/actions/workflows/ci.yml/badge.svg)](https://github.com/lehuaner/TextPatch/actions/workflows/ci.yml)
+[![CI](https://github.com/lehuaner/Text Eraser/actions/workflows/ci.yml/badge.svg)](https://github.com/lehuaner/Text Eraser/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/text-eraser)](https://pypi.org/project/text-eraser/)
 [![Python](https://img.shields.io/pypi/pyversions/text-eraser)](https://pypi.org/project/text-eraser/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -26,13 +26,13 @@ pip install text-eraser
 
 需要 Python 3.10+。DBNet 模型（约 5MB）在首次使用时自动从 HuggingFace 下载，之后离线可用。
 
-> PyPI 发行名为 `text-eraser`（`textpatch` 与既有包名过于相似未获准），Python 导入名是 `textpatch`。
+> PyPI 发行名为 `text-eraser`（曾用名 `textpatch` 与既有包名过于相似未获准），Python 导入名是 `text_eraser`。
 
 从源码运行：
 
 ```bash
-git clone https://github.com/lehuaner/TextPatch.git
-cd TextPatch
+git clone https://github.com/lehuaner/Text Eraser.git
+cd Text Eraser
 pip install -e .
 ```
 
@@ -41,20 +41,20 @@ pip install -e .
 ### Web 界面
 
 ```bash
-textpatch            # 或 python -m textpatch
+text-eraser            # 或 python -m text_eraser
 ```
 
 浏览器打开 <http://127.0.0.1:8765/>，拖入图片即可擦除；支持逐面板查看蒙版/去发光中间结果、调整参数、保留历史记录。
 
-- 端口/地址：环境变量 `TEXTPATCH_PORT`（默认 8765）、`TEXTPATCH_HOST`（默认 127.0.0.1）
-- 运行数据目录：`TEXTPATCH_DATA_DIR`（仓库开发用 `data/`，pip 安装默认 `~/.textpatch/data`）
-- 模型缓存目录：`TEXTPATCH_MODEL_DIR`（pip 安装默认 `~/.textpatch/models`）
+- 端口/地址：环境变量 `TEXT_ERASER_PORT`（默认 8765）、`TEXT_ERASER_HOST`（默认 127.0.0.1）
+- 运行数据目录：`TEXT_ERASER_DATA_DIR`（仓库开发用 `data/`，pip 安装默认 `~/.text_eraser/data`）
+- 模型缓存目录：`TEXT_ERASER_MODEL_DIR`（pip 安装默认 `~/.text_eraser/models`）
 
 ### Python 库调用
 
 ```python
 from PIL import Image
-from textpatch import erase_text, to_rgb_uint8
+from text_eraser import erase_text, to_rgb_uint8
 
 rgb = to_rgb_uint8(Image.open("demo.png"))       # HxWx3 uint8 RGB
 result, mask, meta = erase_text(rgb, return_mask=True)
@@ -66,7 +66,7 @@ Image.fromarray(result).save("out.png")
 
 ```python
 import numpy as np
-from textpatch import inpaint
+from text_eraser import inpaint
 
 hole = np.zeros(rgb.shape[:2], np.uint8)   # >0 = 要清除的区域
 hole[10:40, 20:80] = 255
@@ -113,8 +113,8 @@ pytest                 # 合成图测试套件
 ```
 
 ```
-TextPatch/
-├── textpatch/          # 包本体 (检测/蒙版/填充/去发光/Web)
+Text Eraser/
+├── text_eraser/          # 包本体 (检测/蒙版/填充/去发光/Web)
 ├── tests/              # 合成图测试 (CI 用, 自足不依赖样图)
 ├── docs/
 │   ├── ALGORITHM.md    # 函数级算法与参数指南

@@ -2,7 +2,7 @@
 
 输出:
   docs/assets/demo.png       README 演示图 (原图 | 擦除结果)
-  textpatch/assets/example.png  包内示例图 (web 界面「示例图」按钮用)
+  text_eraser/assets/example.png  包内示例图 (web 界面「示例图」按钮用)
 
 用法: python scripts/make_release_demo.py
 """
@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from textpatch import erase_text, to_rgb_uint8  # noqa: E402
+from text_eraser import erase_text, to_rgb_uint8  # noqa: E402
 
 
 def _find_font(size: int) -> ImageFont.FreeTypeFont:
@@ -104,7 +104,7 @@ def main() -> None:
     print("saved:", out_dir / "demo.png")
 
     # 包内示例图 (web「示例图」按钮)
-    asset_dir = ROOT / "textpatch" / "assets"
+    asset_dir = ROOT / "text_eraser" / "assets"
     asset_dir.mkdir(exist_ok=True)
     img.resize((int(img.width * 0.6), int(img.height * 0.6))).save(asset_dir / "example.png")
     print("saved:", asset_dir / "example.png")

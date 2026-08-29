@@ -9,7 +9,7 @@ from PIL import Image
 
 ROOT = "D:/Code/Project/Python/TextPatch"
 sys.path.insert(0, ROOT)
-from textpatch.text_select import detect_text_mask, _deglow_full_green_v2
+from text_eraser.text_select import detect_text_mask, _deglow_full_green_v2
 
 rgb = np.array(Image.open(f"{ROOT}/data/_glowcheck/668.png").convert("RGB"))
 kw = dict(method="ml", q_off=55.0, max_area_ratio=0.40, max_box_ratio=0.40,

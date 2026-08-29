@@ -1,8 +1,8 @@
 """Web 后端：POST /api/erase 上传图片，返回擦除结果 PNG + meta。
 
 启动：
-  python -m textpatch            # 等价于 uvicorn textpatch.webapp:app
-  uvicorn textpatch.webapp:app --host 127.0.0.1 --port 8765
+  python -m text_eraser            # 等价于 uvicorn text_eraser.webapp:app
+  uvicorn text_eraser.webapp:app --host 127.0.0.1 --port 8765
 """
 from __future__ import annotations
 
@@ -20,7 +20,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
-from textpatch.eraser import erase_text
+from text_eraser import __version__
+from text_eraser.eraser import erase_text
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_DIR.parent
@@ -28,20 +29,20 @@ STATIC_DIR = _PACKAGE_DIR / "static"
 
 
 def _default_data_dir() -> Path:
-    """仓库 checkout 用 <repo>/data; pip 安装落到 ~/.textpatch/data
-    (site-packages 不应写运行数据)。环境变量 TEXTPATCH_DATA_DIR 优先。"""
-    env = os.environ.get("TEXTPATCH_DATA_DIR")
+    """仓库 checkout 用 <repo>/data; pip 安装落到 ~/.text_eraser/data
+    (site-packages 不应写运行数据)。环境变量 TEXT_ERASER_DATA_DIR 优先。"""
+    env = os.environ.get("TEXT_ERASER_DATA_DIR")
     if env:
         return Path(env)
     if (_REPO_ROOT / "data").is_dir():
         return _REPO_ROOT / "data"
-    return Path.home() / ".textpatch" / "data"
+    return Path.home() / ".text_eraser" / "data"
 
 
 DATA_DIR = _default_data_dir()
 HISTORY_DIR = DATA_DIR / "history"
 
-app = FastAPI(title="Text Eraser", version="0.1.0")
+app = FastAPI(title="Text Eraser", version=__version__)
 
 # static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -457,10 +458,10 @@ async def erase(
 
 
 def main() -> None:
-    """命令行入口: python -m textpatch / textpatch 命令。"""
+    """命令行入口: python -m text_eraser / text_eraser 命令。"""
     import uvicorn
-    host = os.environ.get("TEXTPATCH_HOST", "127.0.0.1")
-    port = int(os.environ.get("TEXTPATCH_PORT", "8765"))
+    host = os.environ.get("TEXT_ERASER_HOST", "127.0.0.1")
+    port = int(os.environ.get("TEXT_ERASER_PORT", "8765"))
     uvicorn.run(app, host=host, port=port)
 
 

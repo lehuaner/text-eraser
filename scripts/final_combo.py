@@ -7,8 +7,8 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from textpatch.text_select import detect_text_mask
-from textpatch.patch_fill import inpaint
+from text_eraser.text_select import detect_text_mask
+from text_eraser.patch_fill import inpaint
 
 
 def force_color_match(img, mask, ring_radius=15):
