@@ -127,6 +127,19 @@ Text Eraser/
 
 `scripts/` 下还有一套基于真实样图的回归脚本（`regress_*.py`，样图不入库，需本地自备 `data/` 样图），用于算法调参时的逐位回归验证。
 
+## 发布
+
+发新版本无需本地构建、无需任何 API token——推送 tag 即自动发布到 PyPI（Trusted Publishing / OIDC）：
+
+```bash
+# 1. 升版本号: pyproject.toml 的 version + text_eraser/__init__.py 的 __version__
+# 2. 提交后打 tag 推送
+git tag v0.1.2 && git push origin main v0.1.2
+```
+
+首次使用前需在 PyPI 一次性登记发布者：项目管理页 → Settings → Publishing，
+填 Owner `lehuaner` / Repository `text-eraser` / Workflow `publish.yml`（Environment 留空）。
+
 ## License
 
 [MIT](LICENSE)
