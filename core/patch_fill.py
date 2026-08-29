@@ -306,11 +306,26 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         wx0, wx1 = tx - half, tx + half + 1
         tpatch = filled[wy0:wy1, wx0:wx1]
         src = filled[sy - half:sy + half + 1, sx - half:sx + half + 1].astype(np.float32)
-        # 局部颜色自适应：仅锚定 orig_known 内 ≥8 个真纹理像素时启用
+        # 局部颜色自适应：锚定 orig_known 内 ≥8 个真纹理像素时启用。
+        # 锚窗逐级扩大(7x7 → 11x11 → 17x17): 锯齿/凹角处的边界块在 7x7 内
+        # 已知像素常 <8, 自适应被跳过 → 源块**原样直拷**。双色块背景图
+        # (1787980309628: 字上方浅色块 126~155 全在取样池)里, 弱约束边界块
+        # 选中亮灰源块, 直拷后在深色区呈现为「小白块」(实测全部贴蒙版边界)。
+        # 扩锚窗后任何边界块都对齐本地真背景的均值/方差(方差对齐保留纹理
+        # 对比度, 不是模糊), 亮灰源块被拉回本地色调。
         ta = orig_known[wy0:wy1, wx0:wx1]
-        if int(ta.sum()) >= 8:
-            tmean = tpatch[ta].mean(0)
-            tstd = tpatch[ta].std(0) + 1e-3
+        tv = tpatch[ta]
+        if int(ta.sum()) < 8:
+            for r in (5, 8):
+                by0, by1 = max(0, ty - r), min(sh, ty + r + 1)
+                bx0, bx1 = max(0, tx - r), min(sw, tx + r + 1)
+                ta2 = orig_known[by0:by1, bx0:bx1]
+                if int(ta2.sum()) >= 8:
+                    tv = filled[by0:by1, bx0:bx1][ta2]
+                    break
+        if len(tv) >= 8:
+            tmean = tv.mean(0)
+            tstd = tv.std(0) + 1e-3
             smean = src.reshape(-1, 3).mean(0)
             sstd = src.reshape(-1, 3).std(0) + 1e-3
             src = (src - smean) * (tstd / sstd) + tmean
@@ -377,6 +392,16 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
                 tkn = known[tyy, txx]                           # (n,P,P)
                 diff = (src - tpatch[:, None]) * tkn[:, None, ..., None]
                 ssd = np.einsum('nkpqc,nkpqc->nk', diff, diff)
+                # 均值兼容惩罚: 弱约束边界块(已知像素少)的 SSD 区分度低, 异色区
+                # 亮源块能凭几个已知像素胜出 → 填充边界白块(1787980309628)。
+                # 把「源块均值 vs 目标块已知均值」的差按已知像素数记入 SSD ——
+                # 相当于假设全部块像素都该有此量级的差; 合法结构延续的均值
+                # 本来就与局部相近, 罚分可忽略。
+                tkn_sum = np.clip(tkn.sum((1, 2)), 1.0, None)
+                tmean = (tpatch * tkn[..., None]).sum((1, 2)) / tkn_sum[..., None]
+                smean = src.mean((2, 3))                       # (n,K,C)
+                ssd = ssd + 4.0 * tkn_sum[:, None] * \
+                    ((smean - tmean[:, None, :]) ** 2).sum(-1)
                 bi = np.argmin(ssd, 1)
                 sy = pool_y[np.arange(n), bi]
                 sx = pool_x[np.arange(n), bi]
