@@ -961,7 +961,17 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     green = (g - np.maximum(r, b) > g_thr) & (g > g_lo)
     # 种子放宽: 淡绿边缘(g-max 仅 4~14)也算强绿 → 让连通生长更靠近浅光外缘
     strong_green = (g - np.maximum(r, b) > 8) & (g > 95)
-    if int(strong_green.sum()) < min_strong:        # 无强发光 → 普通图, 零改动
+    # 发光判定看「最大连通块」而非总像素数: 真发光的强绿连片(178/556/635/668
+    # 实测最大块 2648~37100px), 而非发光图边缘的压缩噪点只是零星散点
+    # (4462 展台: 33 个散点挤在 4x21 角落、最大块仅 17px, 总数却 ≥30 过了旧门
+    # → 被误判发光, zone 的「亮」条件又吞掉 48% 画面做重建)。散点不成片 → 不判。
+    if strong_green.any():
+        _n, _lab, _stats = cv2.connectedComponentsWithStats(
+            strong_green.astype(np.uint8), 8)[:3]
+        _max_cc = int(_stats[1:, 4].max()) if _n > 1 else 0
+    else:
+        _max_cc = 0
+    if _max_cc < min_strong:        # 无成片强绿 → 普通图, 零改动
         return (rgb, empty, empty) if return_zone else (rgb, empty)
 
     # 文字笔画: min 够亮 且 非强绿(白色文字 g 仅略高; 发光 g 明显主导)
