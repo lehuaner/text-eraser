@@ -407,9 +407,11 @@ async def erase(
         mt = np.zeros((H, W, 4), np.uint8)
         mt[m_bool] = (255, 60, 60, 150)
         data["mask_transparent_b64"] = _png(mt)
-        # 中间产物 ②：文字图层(RGBA) —— 只保留蒙版选中的文字像素, 其余透明
+        # 中间产物 ②：文字图层(RGBA) —— 只保留蒙版选中的文字像素, 其余透明。
+        # 从 base(有发光=去发光图, 与真实填充底图一致)提取 —— 原图上的绿字
+        # 已被去发光处理, 展示"实际将被擦除的文字"应是去发光后的样子。
         tl = np.zeros((H, W, 4), np.uint8)
-        tl[m_bool, :3] = rgb[m_bool]
+        tl[m_bool, :3] = base[m_bool]
         tl[m_bool, 3] = 255
         data["text_layer_b64"] = _png(tl)
 
