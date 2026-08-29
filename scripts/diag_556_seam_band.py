@@ -150,11 +150,20 @@ def instrumented(rgb, tmask, strength=1.0, alpha_core=0.65, zone_ratio=0.6,
     cap["fb"] = fb.copy()
     rebuilt = None
     if fb.any() and zone.sum() < 0.8 * Hh * Ww and B is not None:
-        if d_warm > 0 and D_rg is not None:
-            B = np.stack([B[..., 0],
-                          B[..., 0] - D_rg,
-                          B[..., 0] - D_rg - D_gb], axis=-1)
-            np.clip(B, 0, 255, out=B)
+        from core.text_select import _harmonic_background
+        if d_warm > 0:
+            _init = None
+            if D_rg is not None:
+                _init = np.stack([B[..., 0],
+                                  B[..., 0] - D_rg,
+                                  B[..., 0] - D_rg - D_gb], axis=-1)
+                np.clip(_init, 0, 255, out=_init)
+            _Bh = _harmonic_background(out, zone, init=_init)
+            if _Bh is not None:
+                B = _Bh
+                cap["B_harmonic"] = True
+            elif _init is not None:
+                B = _init
             cap["B_aligned"] = B.copy()
         imgf = rgb.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,

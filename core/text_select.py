@@ -1008,6 +1008,54 @@ def _geodesic_background(rgb: np.ndarray, zone: np.ndarray,
     return B, outs
 
 
+def _harmonic_background(values: np.ndarray, hole: np.ndarray,
+                         ring_lo: int = 2, ring_hi: int = 4,
+                         iters: int = 300, max_side: int = 200,
+                         init: np.ndarray = None):
+    """调和插值背景场：在 hole(待重建区) 内解 Laplace 方程 ΔB=0，
+    边界条件 = hole 外 ring_lo~ring_hi 带的实测像素值。
+
+    与测地「单源复制」场相比，调和场是**与边界连续的最平滑填充**——没有
+    源块拼接感，适合偏纯色背景：发光区内部不再出现测地源分块造成的色差色块。
+    低分辨率网格上 Jacobi 迭代(向量化)；init 传测地对齐场可加速收敛
+    (迭代只负责把 init 松弛到边界一致)。values 传「减绿后」的图，
+    边界带即已做过去绿/暖度校正的背景，色相天然与周边一致。
+
+    Returns: (H,W,3) float32 调和背景场。
+    """
+    H, W = values.shape[:2]
+    long_side = max(H, W)
+    scale = max(2, -(-long_side // max_side))       # ceil
+    H2, W2 = max(2, H // scale), max(2, W // scale)
+    hole_l = cv2.resize(hole.astype(np.uint8) * 255, (W2, H2),
+                        interpolation=cv2.INTER_NEAREST) > 127
+    if not hole_l.any() or hole_l.all():
+        return None
+    dout = cv2.distanceTransform((~hole_l).astype(np.uint8), cv2.DIST_L2, 5)
+    ring = (~hole_l) & (dout >= ring_lo) & (dout <= ring_hi)
+    if not ring.any():
+        return None
+    vals = cv2.resize(values.astype(np.float32), (W2, H2),
+                      interpolation=cv2.INTER_AREA)
+    if init is not None:
+        B = cv2.resize(init.astype(np.float32), (W2, H2),
+                       interpolation=cv2.INTER_AREA)
+        B[~hole_l] = vals[~hole_l]                  # 边界固定为实测背景
+    else:
+        B = vals.copy()                             # 洞内先用边界均值起步
+        B[hole_l] = vals[ring].mean(axis=0)
+        B[~hole_l] = vals[~hole_l]
+    for _ in range(iters):
+        up = np.vstack([B[:1], B[:-1]])
+        down = np.vstack([B[1:], B[-1:]])
+        left = np.hstack([B[:, :1], B[:, :-1]])
+        right = np.hstack([B[:, 1:], B[:, -1:]])
+        avg = (up + down + left + right) / 4.0
+        B[hole_l] = avg[hole_l]
+    out = cv2.resize(B, (W, H), interpolation=cv2.INTER_CUBIC)
+    return cv2.GaussianBlur(out, (0, 0), 2.0)
+
+
 def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                           g_thr: int = 2, g_lo: int = 60,
                           min_strong: int = 30,
@@ -1216,19 +1264,23 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     if fb.any() and zone.sum() < 0.8 * H * W and B is not None:
         # (B 与 D_rg/D_gb 已在减绿前算好 —— 见「测地背景场」块。此处只做对齐
         #  与重建。)
-        # 背景暖度对齐(逐像素双轴): 暖背景上旧法只用一个全局中位 R−G 平移 G,
-        # 既修不齐 G−B 轴, 也修不齐「逐弧段源色不同」的偏差 —— 556 实测 B 场
-        # R−G 中位 3(背景 10)、G−B 中位 12(背景 6), 整片填充呈橄榄灰绿, 与
-        # 暖褐背景对比成「泛绿弧段」。按发光模型绿晕几乎不抬 R 通道 → 以 B 场
-        # R 为锚, 用同向测地传播的局部背景色度重建 G/B:
-        #     G = R − (R−G)_bg,   B = G − (G−B)_bg
-        # 每像素得到自己方向上的背景色相, 弧段间不再串色。
-        # d_warm=0(中性背景, 178/635/668)完全不走此分支, 行为不变。
-        if d_warm > 0 and D_rg is not None:
-            B = np.stack([B[..., 0],
-                          B[..., 0] - D_rg,
-                          B[..., 0] - D_rg - D_gb], axis=-1)
-            np.clip(B, 0, 255, out=B)
+        # 偏纯色背景的调和填充(d_warm>0 门控): 测地单源场有「源块拼接」的低频
+        # 色差(556 实测 fb 内 30~60px 尺度的明暗补丁, 加大高斯平滑无效)。改用
+        # 调和插值(ΔB=0, 边界=晕外 2~16px 已减绿背景) —— 数学上即与边界连续的
+        # 最平滑填充, 发光区内部不再有分块色块。边界值取自减绿后的 out, 色相
+        # 天然与周边一致, 无需再做暖度对齐。d_warm=0 的图不进此分支(行为不变)。
+        if d_warm > 0:
+            _init = None
+            if D_rg is not None:
+                _init = np.stack([B[..., 0],
+                                  B[..., 0] - D_rg,
+                                  B[..., 0] - D_rg - D_gb], axis=-1)
+                np.clip(_init, 0, 255, out=_init)
+            _Bh = _harmonic_background(out, zone, init=_init)
+            if _Bh is not None:
+                B = _Bh
+            elif _init is not None:
+                B = _init
         imgf = rgb.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
                                       cv2.DIST_L2, 5)
