@@ -79,7 +79,7 @@ def _erase_once(
     deglow_zone_ratio: float = 0.6,
     deglow_zone_expand: int = 10,
     deglow_protect_px: int = 1,
-    deglow_chroma_keep: bool = False,
+    deglow_chroma_keep: bool = True,
     deglow_scheme: str = "v2",
 ):
     """最小化文字擦除管线.
@@ -280,7 +280,7 @@ def erase_text(
     deglow_zone_ratio: float = 0.6,
     deglow_zone_expand: int = 10,
     deglow_protect_px: int = 1,
-    deglow_chroma_keep: bool = False,
+    deglow_chroma_keep: bool = True,
     deglow_scheme: str = "v2",
 ):
     """文字擦除入口。
@@ -625,7 +625,7 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
                      deglow_zone_ratio: float = 0.6,
                      deglow_zone_expand: int = 10,
                      deglow_protect_px: int = 1,
-                     deglow_chroma_keep: bool = False,
+                     deglow_chroma_keep: bool = True,
                      soft_expand: float = 0.0):
     """v2 入口：先减绿度去发光 → 再对「去完发光的图」走普通去字算法(非高亮路径)。
 
