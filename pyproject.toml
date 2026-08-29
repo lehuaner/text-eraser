@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "textpatch"
+version = "0.1.0"
+description = "图片文字擦除工具：DBNet 文字检测 + PatchMatch 内容识别填充 + 去发光，附本地 Web 界面"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "lehuaner" }]
+requires-python = ">=3.10"
+keywords = ["text-removal", "inpainting", "patchmatch", "dbnet", "ocr", "image-processing", "text-eraser"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: Editors",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "numpy>=1.26",
+    "opencv-python-headless>=4.8",
+    "Pillow>=10.0",
+    "python-multipart>=0.0.9",
+    "onnxruntime>=1.16",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "build>=1.0", "twine>=5.0"]
+
+[project.urls]
+Homepage = "https://github.com/lehuaner/TextPatch"
+Repository = "https://github.com/lehuaner/TextPatch"
+Issues = "https://github.com/lehuaner/TextPatch/issues"
+
+[project.scripts]
+textpatch = "textpatch.webapp:main"
+
+[tool.setuptools.packages.find]
+include = ["textpatch*"]
+exclude = ["deglow*", "scripts*", "tests*"]
+
+[tool.setuptools.package-data]
+textpatch = ["static/**/*", "assets/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

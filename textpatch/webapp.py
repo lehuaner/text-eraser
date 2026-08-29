@@ -60,8 +60,10 @@ async def health():
 
 @app.get("/api/example.png")
 async def example_png():
-    """返回内置示例图 needExtractAndPatch.png."""
+    """返回示例图: 仓库样图优先, pip 安装时回退到包内合成示例图."""
     p = DATA_DIR / "needExtractAndPatch.png"
+    if not p.is_file():
+        p = _PACKAGE_DIR / "assets" / "example.png"
     if not p.is_file():
         raise HTTPException(404, "内置示例图缺失")
     return FileResponse(str(p), media_type="image/png")

@@ -45,9 +45,15 @@ def _default_model_dir() -> str:
 
 MODEL_DIR = _default_model_dir()
 MODEL_PATH = os.path.join(MODEL_DIR, "ch_PP-OCRv4_det.onnx")
-# HuggingFace Heliosoph/paddleocr-v4-det-onnx (Apache-2.0)
-MODEL_URL = (
+# HuggingFace Heliosoph/paddleocr-v4-det-onnx (Apache-2.0)。
+# 依次尝试: 环境变量 TEXTPATCH_MODEL_URL → huggingface.co → hf-mirror.com
+# (镜像回退: huggingface.co 在部分网络不可直连)。
+MODEL_URL = os.environ.get("TEXTPATCH_MODEL_URL") or (
     "https://huggingface.co/Heliosoph/paddleocr-v4-det-onnx/"
+    "resolve/main/ch_PP-OCRv4_det.onnx"
+)
+MODEL_URL_FALLBACK = (
+    "https://hf-mirror.com/Heliosoph/paddleocr-v4-det-onnx/"
     "resolve/main/ch_PP-OCRv4_det.onnx"
 )
 
@@ -77,6 +83,34 @@ def get_model_path() -> str:
     return MODEL_PATH
 
 
+def _download_one(url: str, ctx: ssl.SSLContext) -> None:
+    """从单个 URL 下载模型到 MODEL_PATH (先落 .part, 校验大小后改名)."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "textpatch/" + __import__("textpatch").__version__}
+    )
+    tmp = MODEL_PATH + ".part"
+    try:
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as r, \
+                open(tmp, "wb") as f:
+            while True:
+                buf = r.read(1 << 20)
+                if not buf:
+                    break
+                f.write(buf)
+        # 落盘后验证大小再改名, 避免半截文件被当成"已存在"
+        if os.path.getsize(tmp) < 1_000_000:
+            raise RuntimeError(
+                "downloaded model looks too small ({} bytes)".format(
+                    os.path.getsize(tmp)))
+        os.replace(tmp, MODEL_PATH)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def ensure_model() -> str:
     """保证模型在本地. 线程安全; 并发调用不会重复下载. 失败抛 RuntimeError."""
     global _DOWNLOAD_DONE
@@ -87,34 +121,20 @@ def ensure_model() -> str:
             return MODEL_PATH
         os.makedirs(MODEL_DIR, exist_ok=True)
         ctx = ssl.create_default_context()
-        req = urllib.request.Request(
-            MODEL_URL, headers={"User-Agent": "textpatch/" + __import__("textpatch").__version__}
+        last_err: Exception | None = None
+        for url in (MODEL_URL, MODEL_URL_FALLBACK):
+            try:
+                _download_one(url, ctx)
+                _DOWNLOAD_DONE = True
+                return MODEL_PATH
+            except Exception as e:  # 换下一个源
+                last_err = e
+        raise RuntimeError(
+            "模型下载失败 (huggingface.co 与 hf-mirror.com 均不可达)。"
+            "可手动下载 ch_PP-OCRv4_det.onnx 放到: "
+            f"{MODEL_PATH} ; 或用环境变量 TEXTPATCH_MODEL_URL 指定直链。"
+            f"最后错误: {last_err}"
         )
-        tmp = MODEL_PATH + ".part"
-        try:
-            with urllib.request.urlopen(req, timeout=120, context=ctx) as r, \
-                    open(tmp, "wb") as f:
-                while True:
-                    buf = r.read(1 << 20)
-                    if not buf:
-                        break
-                    f.write(buf)
-            # 落盘后验证大小再改名, 避免半截文件被当成"已存在"
-            if os.path.getsize(tmp) < 1_000_000:
-                raise RuntimeError(
-                    "downloaded model looks too small ({} bytes)".format(
-                        os.path.getsize(tmp)))
-            os.replace(tmp, MODEL_PATH)
-            _DOWNLOAD_DONE = True
-        except Exception:
-            # 清理残片
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
-            raise
-    return MODEL_PATH
 
 
 def _get_session():
