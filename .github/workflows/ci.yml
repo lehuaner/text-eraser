@@ -19,6 +19,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install
-        run: pip install -e .[dev]
+        # cv2 由使用方环境提供 (0.2.0 起不进依赖): CI 无头环境选 opencv-python-headless
+        run: |
+          pip install "opencv-python-headless>=4.8"
+          pip install -e ".[dev,web,ml]"
       - name: Test
         run: pytest -q

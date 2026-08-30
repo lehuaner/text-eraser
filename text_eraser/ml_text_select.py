@@ -10,12 +10,15 @@ text_eraser/models/det/, pip 安装落在 ~/.text_eraser/models/det/).
   * 检测阶段语言无关 (中英日韩皆可), 不依赖识别器;
   * ONNX 4.7MB, CPU 推理 0.08s/图 (4096x2160), 满足"轻量"要求.
 
-依赖: onnxruntime + cv2 + numpy (见 pyproject/requirements).
+依赖: cv2 + numpy 必需; onnxruntime 属于可选 extra (pip install "text-eraser[ml]"),
+缺失时 import 与经典 CV 路径均可用, 调用 ML 检测才报清晰提示。
 """
 from __future__ import annotations
 
 import os
+import shutil
 import ssl
+import sys
 import threading
 import urllib.request
 from typing import Optional
@@ -23,32 +26,45 @@ from typing import Optional
 import cv2
 import numpy as np
 
-# 延迟导入 onnxruntime, 避免 import 即加载; 也让经典 CV 路径不被拖累
-_ort = None
+
+def _env_first(*names: str) -> str:
+    """按优先级取第一个非空环境变量 (0.2.0 统一为 TEXTERASER_*,
+    旧名 TEXT_ERASER_* / TEXTPATCH_* 仅作兼容回退)。"""
+    for name in names:
+        v = os.environ.get(name)
+        if v:
+            return v
+    return ""
+
 
 # ---------------------------------------------------------------------------
 # 模型路径与下载
 # ---------------------------------------------------------------------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
+# 用户级默认模型目录 (pip 安装形态); 0.1.x 曾用 ~/.textpatch, 0.2.0 迁移到 ~/.text_eraser
+_USER_MODEL_DIR = os.path.join(os.path.expanduser("~"), ".text_eraser", "models", "det")
+# 0.1.x 旧版默认模型目录 (仅用于一次性迁移)
+_LEGACY_MODEL_DIR = os.path.join(os.path.expanduser("~"), ".textpatch", "models", "det")
 
 
 def _default_model_dir() -> str:
     """仓库 checkout 用包内 models/det（保留已下载模型）; pip 安装落到用户目录
-    （site-packages 未必可写）。可用环境变量 TEXT_ERASER_MODEL_DIR 覆盖。"""
-    env = os.environ.get("TEXT_ERASER_MODEL_DIR")
+    （site-packages 未必可写）。可用环境变量 TEXTERASER_MODEL_DIR 覆盖
+    （旧名 TEXT_ERASER_MODEL_DIR / TEXTPATCH_MODEL_DIR 兼容回退）。"""
+    env = _env_first("TEXTERASER_MODEL_DIR", "TEXT_ERASER_MODEL_DIR", "TEXTPATCH_MODEL_DIR")
     if env:
         return env
     if os.path.isdir(os.path.join(os.path.dirname(_HERE), "data")):
         return os.path.join(_HERE, "models", "det")
-    return os.path.join(os.path.expanduser("~"), ".text_eraser", "models", "det")
+    return _USER_MODEL_DIR
 
 
 MODEL_DIR = _default_model_dir()
 MODEL_PATH = os.path.join(MODEL_DIR, "ch_PP-OCRv4_det.onnx")
 # HuggingFace Heliosoph/paddleocr-v4-det-onnx (Apache-2.0)。
-# 依次尝试: 环境变量 TEXT_ERASER_MODEL_URL → huggingface.co → hf-mirror.com
-# (镜像回退: huggingface.co 在部分网络不可直连)。
-MODEL_URL = os.environ.get("TEXT_ERASER_MODEL_URL") or (
+# 依次尝试: 环境变量 TEXTERASER_MODEL_URL (旧名 TEXT_ERASER_MODEL_URL 兼容) →
+# huggingface.co → hf-mirror.com (镜像回退: huggingface.co 在部分网络不可直连)。
+MODEL_URL = _env_first("TEXTERASER_MODEL_URL", "TEXT_ERASER_MODEL_URL") or (
     "https://huggingface.co/Heliosoph/paddleocr-v4-det-onnx/"
     "resolve/main/ch_PP-OCRv4_det.onnx"
 )
@@ -111,12 +127,39 @@ def _download_one(url: str, ctx: ssl.SSLContext) -> None:
                 pass
 
 
+def _migrate_legacy_model() -> None:
+    """0.1.x 的模型缓存在 ~/.textpatch/models/det。若新目录还没有模型而旧目录
+    已有, 直接复制过来并在 stderr 提示, 避免静默重新下载 (复制失败则给出
+    手动迁移提示)。仅当 MODEL_DIR 为用户默认目录时生效。"""
+    old = os.path.join(_LEGACY_MODEL_DIR, os.path.basename(MODEL_PATH))
+    if not os.path.isfile(old):
+        return
+    try:
+        os.makedirs(MODEL_DIR, exist_ok=True)
+        shutil.copyfile(old, MODEL_PATH)
+        print(
+            f"[text-eraser] 已将旧目录模型 {old} 迁移到 {MODEL_PATH} "
+            "（确认可用后可删除 ~/.textpatch/）",
+            file=sys.stderr,
+        )
+    except OSError as e:
+        print(
+            f"[text-eraser] 检测到旧目录模型 {old}，复制到 {MODEL_PATH} 失败({e})；"
+            "可手动复制该文件以避免重新下载。",
+            file=sys.stderr,
+        )
+
+
 def ensure_model() -> str:
     """保证模型在本地. 线程安全; 并发调用不会重复下载. 失败抛 RuntimeError."""
     global _DOWNLOAD_DONE
     if is_model_available():
         return MODEL_PATH
     with _DOWNLOAD_LOCK:
+        if is_model_available():
+            return MODEL_PATH
+        if MODEL_DIR == _USER_MODEL_DIR:
+            _migrate_legacy_model()
         if is_model_available():
             return MODEL_PATH
         os.makedirs(MODEL_DIR, exist_ok=True)
@@ -132,7 +175,7 @@ def ensure_model() -> str:
         raise RuntimeError(
             "模型下载失败 (huggingface.co 与 hf-mirror.com 均不可达)。"
             "可手动下载 ch_PP-OCRv4_det.onnx 放到: "
-            f"{MODEL_PATH} ; 或用环境变量 TEXT_ERASER_MODEL_URL 指定直链。"
+            f"{MODEL_PATH} ; 或用环境变量 TEXTERASER_MODEL_URL 指定直链。"
             f"最后错误: {last_err}"
         )
 
@@ -145,7 +188,13 @@ def _get_session():
     with _SESSION_LOCK:
         if _SESSION is not None:
             return _SESSION
-        import onnxruntime as ort  # 局部导入
+        try:
+            import onnxruntime as ort  # 局部导入 (可选依赖)
+        except ImportError:
+            raise RuntimeError(
+                "未安装 onnxruntime，ML 文字检测不可用。请安装: "
+                'pip install "text-eraser[ml]"'
+            ) from None
         path = get_model_path()
         # 本机 onnxruntime 是 CPU 版, 无 CUDA EP; 直接用默认 providers
         providers = ort.get_available_providers() or ["CPUExecutionProvider"]

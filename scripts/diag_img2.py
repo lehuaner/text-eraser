@@ -1,12 +1,12 @@
 """诊断 needExtractAndPatch2 (座驾) 漏白边根因，对比 mask 补救方案。"""
 import sys, time
-sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
+sys.path.insert(0, r'D:\Code\Project\Python\TextEraser')
 import numpy as np, cv2
 from PIL import Image
 from text_eraser.text_select import detect_text_mask, to_rgb_uint8
 from text_eraser.patch_fill import inpaint as pm_inpaint
 
-P = r'D:\Code\Project\Python\TextPatch\data\needExtractAndPatch2.png'
+P = r'D:\Code\Project\Python\TextEraser\data\needExtractAndPatch2.png'
 rgb = to_rgb_uint8(Image.open(P).convert('RGB'))
 H, W = rgb.shape[:2]
 
@@ -69,8 +69,8 @@ resC = fill_and_measure(mc, "edge-aware(band)")
 def zoom(p, k=4):
     im = Image.fromarray(p).resize((p.shape[1]*k, p.shape[0]*k), Image.NEAREST)
     return im
-outA = zoom(resA[by0:by1, bx0:bx1]); outA.save(r'D:\Code\Project\Python\TextPatch\data\dryrun_out\_img2_pad2_4x.png')
-outB = zoom(resB[by0:by1, bx0:bx1]); outB.save(r'D:\Code\Project\Python\TextPatch\data\dryrun_out\_img2_pad3_4x.png')
-outC = zoom(resC[by0:by1, bx0:bx1]); outC.save(r'D:\Code\Project\Python\TextPatch\data\dryrun_out\_img2_edge_4x.png')
-origz = zoom(orig_crop); origz.save(r'D:\Code\Project\Python\TextPatch\data\dryrun_out\_img2_orig_4x.png')
+outA = zoom(resA[by0:by1, bx0:bx1]); outA.save(r'D:\Code\Project\Python\TextEraser\data\dryrun_out\_img2_pad2_4x.png')
+outB = zoom(resB[by0:by1, bx0:bx1]); outB.save(r'D:\Code\Project\Python\TextEraser\data\dryrun_out\_img2_pad3_4x.png')
+outC = zoom(resC[by0:by1, bx0:bx1]); outC.save(r'D:\Code\Project\Python\TextEraser\data\dryrun_out\_img2_edge_4x.png')
+origz = zoom(orig_crop); origz.save(r'D:\Code\Project\Python\TextEraser\data\dryrun_out\_img2_orig_4x.png')
 print("saved zooms")

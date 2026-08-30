@@ -1,6 +1,6 @@
-# Text Eraser
+# TextEraser
 
-[![CI](https://github.com/lehuaner/Text Eraser/actions/workflows/ci.yml/badge.svg)](https://github.com/lehuaner/Text Eraser/actions/workflows/ci.yml)
+[![CI](https://github.com/lehuaner/text-eraser/actions/workflows/ci.yml/badge.svg)](https://github.com/lehuaner/text-eraser/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/text-eraser)](https://pypi.org/project/text-eraser/)
 [![Python](https://img.shields.io/pypi/pyversions/text-eraser)](https://pypi.org/project/text-eraser/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -21,19 +21,41 @@
 ## 安装
 
 ```bash
-pip install text-eraser
+# 库调用: cv2 (OpenCV) 由使用方环境提供, 先自选其一安装
+pip install opencv-python        # 桌面/有 GUI; 服务器可选 opencv-python-headless
+pip install text-eraser          # 纯填充/经典检测即装即用
+
+# 需要 DBNet (ML) 文字检测再装可选依赖
+pip install "text-eraser[ml]"
+
+# 本地 Web 界面 (fastapi + uvicorn + DBNet 检测一次装全)
+pip install "text-eraser[web,ml]"
 ```
+
+> **⚠️ cv2 不要混装**：`opencv-python` 与 `opencv-python-headless` 是同一个 `cv2`
+> 命名空间，同一环境里两个都装会互相覆盖 site-packages/cv2 文件（OpenCV 官方禁止）。
+> 本包对二者任选其一均可，但**绝不会替你安装 cv2**——用哪种由你的环境决定。
 
 需要 Python 3.10+。DBNet 模型（约 5MB）在首次使用时自动从 HuggingFace 下载，之后离线可用。
 
-> PyPI 发行名为 `text-eraser`（曾用名 `textpatch` 与既有包名过于相似未获准），Python 导入名是 `text_eraser`。
+> **0.2.0 更名迁移**：Python 导入名由 `textpatch` 更名为 `text_eraser`（与 PyPI 包名
+> `text-eraser` 对应），其余 API 完全不变，只需改导入前缀：
+>
+> ```diff
+> - from textpatch import erase_text
+> + from text_eraser import erase_text
+> ```
+>
+> 同时环境变量 `TEXTPATCH_MODEL_DIR` 更名 `TEXTERASER_MODEL_DIR`（旧名自动兼容），
+> 模型缓存目录由 `~/.textpatch/models/det` 迁移到 `~/.text_eraser/models/det`
+> （首次运行检测到旧目录模型会自动复制并提示，不会静默重新下载）。
 
 从源码运行：
 
 ```bash
-git clone https://github.com/lehuaner/Text Eraser.git
-cd Text Eraser
-pip install -e .
+git clone https://github.com/lehuaner/text-eraser.git
+cd text-eraser
+pip install -e ".[web,ml,dev]"
 ```
 
 ## 快速上手
@@ -46,9 +68,10 @@ text-eraser            # 或 python -m text_eraser
 
 浏览器打开 <http://127.0.0.1:8765/>，拖入图片即可擦除；支持逐面板查看蒙版/去发光中间结果、调整参数、保留历史记录。
 
-- 端口/地址：环境变量 `TEXT_ERASER_PORT`（默认 8765）、`TEXT_ERASER_HOST`（默认 127.0.0.1）
-- 运行数据目录：`TEXT_ERASER_DATA_DIR`（仓库开发用 `data/`，pip 安装默认 `~/.text_eraser/data`）
-- 模型缓存目录：`TEXT_ERASER_MODEL_DIR`（pip 安装默认 `~/.text_eraser/models`）
+- 端口/地址：环境变量 `TEXTERASER_PORT`（默认 8765）、`TEXTERASER_HOST`（默认 127.0.0.1）
+- 运行数据目录：`TEXTERASER_DATA_DIR`（仓库开发用 `data/`，pip 安装默认 `~/.text_eraser/data`）
+- 模型缓存目录：`TEXTERASER_MODEL_DIR`（pip 安装默认 `~/.text_eraser/models`）
+- 以上均兼容 0.1.x 旧名 `TEXT_ERASER_*`，新名优先
 
 ### Python 库调用
 
@@ -108,12 +131,13 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
 ## 开发
 
 ```bash
-pip install -e .[dev]
+# cv2 仍由环境提供 (自选 opencv-python 或 opencv-python-headless 其一)
+pip install -e ".[dev,web,ml]"
 pytest                 # 合成图测试套件
 ```
 
 ```
-Text Eraser/
+TextEraser/
 ├── text_eraser/          # 包本体 (检测/蒙版/填充/去发光/Web)
 ├── tests/              # 合成图测试 (CI 用, 自足不依赖样图)
 ├── docs/
@@ -134,7 +158,7 @@ Text Eraser/
 ```bash
 # 1. 升版本号: pyproject.toml 的 version + text_eraser/__init__.py 的 __version__
 # 2. 提交后打 tag 推送
-git tag v0.1.2 && git push origin main v0.1.2
+git tag v0.2.0 && git push origin main v0.2.0
 ```
 
 首次使用前需在 PyPI 一次性登记发布者：项目管理页 → Settings → Publishing，

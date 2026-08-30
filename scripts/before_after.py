@@ -6,10 +6,10 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 
-IMG = r"D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png"
-OLD = r"D:\Code\Project\Python\TextPatch\data\server_result.png"     # 老(TELEA+dil4+color)
-NEW = r"D:\Code\Project\Python\TextPatch\data\server_result_v2.png"  # 新(2px dil + sample_mask)
-OUT = r"D:\Code\Project\Python\TextPatch\data\result"
+IMG = r"D:\Code\Project\Python\TextEraser\data\needExtractAndPatch.png"
+OLD = r"D:\Code\Project\Python\TextEraser\data\server_result.png"     # 老(TELEA+dil4+color)
+NEW = r"D:\Code\Project\Python\TextEraser\data\server_result_v2.png"  # 新(2px dil + sample_mask)
+OUT = r"D:\Code\Project\Python\TextEraser\data\result"
 os.makedirs(OUT, exist_ok=True)
 
 rgb = np.array(Image.open(IMG).convert("RGB"))
@@ -39,7 +39,7 @@ draw.text((gap, gap*2+H*2+2), "NEW: 2px dil + sample_mask → 干净, 纹理自�
 # 中部局部放大三张
 ys_, xs_ = np.where(np.array(Image.open(IMG).convert("L")) < 200)  # 简化
 # 用 DBNet mask 更准
-import sys; sys.path.insert(0, r"D:\Code\Project\Python\TextPatch")
+import sys; sys.path.insert(0, r"D:\Code\Project\Python\TextEraser")
 from text_eraser.text_select import detect_text_mask
 mask_tight, _ = detect_text_mask(rgb, method="ml", q_off=70, max_area_ratio=0.40)
 ys_, xs_ = np.where(mask_tight > 0)

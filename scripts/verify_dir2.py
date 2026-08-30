@@ -1,11 +1,11 @@
 import sys, time, traceback
-sys.path.insert(0, r'D:\Code\Project\Python\TextPatch')
+sys.path.insert(0, r'D:\Code\Project\Python\TextEraser')
 import numpy as np, cv2
 from PIL import Image
 from text_eraser.eraser import erase_text
 
 for name in ['needExtractAndPatch.png', 'needExtractAndPatch2.png']:
-    path = r'D:\Code\Project\Python\TextPatch\data\\' + name
+    path = r'D:\Code\Project\Python\TextEraser\data\\' + name
     rgb = np.asarray(Image.open(path).convert('RGB'), dtype=np.uint8)
     # 默认（无方向）
     r0, m0, meta0 = erase_text(rgb, return_mask=True)
@@ -27,5 +27,5 @@ for name in ['needExtractAndPatch.png', 'needExtractAndPatch2.png']:
     print(f"[{name}] default mask_pix={meta0['mask_pix']}" + (f" dir60 mask_pix={meta1['mask_pix']}" if dir60_ok else " dir60 mask_pix=N/A"))
     print(f"    bbox 内残余亮像素(>{thr:.0f}): 默认={int((lum0>thr).sum())}" + (f"  方向60={int((lum1>thr).sum())}" if dir60_ok else ""))
     if dir60_ok:
-        Image.fromarray(r1).save(r'D:\Code\Project\Python\TextPatch\data\result\\' + name.replace('.png','') + '_dir60.png')
+        Image.fromarray(r1).save(r'D:\Code\Project\Python\TextEraser\data\result\\' + name.replace('.png','') + '_dir60.png')
         print(f"    saved *_dir60.png")

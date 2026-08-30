@@ -18,8 +18,8 @@ from text_eraser.text_select import detect_text_mask
 from text_eraser.patch_fill import inpaint as pm_inpaint
 from text_eraser.eraser import force_color_match
 
-IMG = r"D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png"
-OUT = r"D:\Code\Project\Python\TextPatch\data\dryrun_out"
+IMG = r"D:\Code\Project\Python\TextEraser\data\needExtractAndPatch.png"
+OUT = r"D:\Code\Project\Python\TextEraser\data\dryrun_out"
 os.makedirs(OUT, exist_ok=True)
 
 rgb = np.array(Image.open(IMG).convert("RGB"))

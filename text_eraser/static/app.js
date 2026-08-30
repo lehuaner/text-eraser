@@ -1,4 +1,4 @@
-/* Text Eraser frontend — vanilla JS, no framework. */
+/* TextEraser frontend — vanilla JS, no framework. */
 
 (function () {
   const $ = (id) => document.getElementById(id);

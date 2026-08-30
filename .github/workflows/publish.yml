@@ -1,6 +1,6 @@
 name: Publish to PyPI
 
-# 用法: 打 tag 并推送即自动发布 → git tag v0.1.2 && git push origin v0.1.2
+# 用法: 打 tag 并推送即自动发布 → git tag v0.2.0 && git push origin v0.2.0
 # 无需任何 API token —— 走 PyPI Trusted Publishing (OIDC)。
 # 首次使用前需在 PyPI 项目设置里登记一次本工作流 (见 README「发布」一节)。
 

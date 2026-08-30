@@ -1,7 +1,7 @@
 """诊断 v2 流程：去发光后到底有没有真正去字、为什么文字还看得见。"""
 import os
 import sys
-sys.path.insert(0, "D:/Code/Project/Python/TextPatch")
+sys.path.insert(0, "D:/Code/Project/Python/TextEraser")
 import numpy as np
 from PIL import Image
 import cv2
@@ -9,7 +9,7 @@ import cv2
 from text_eraser.text_select import detect_text_mask, _deglow_full_green_v2
 from text_eraser.eraser import erase_text
 
-ROOT = "D:/Code/Project/Python/TextPatch"
+ROOT = "D:/Code/Project/Python/TextEraser"
 DIAG = os.path.join(ROOT, "data/_diag")
 os.makedirs(DIAG, exist_ok=True)
 

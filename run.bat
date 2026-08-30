@@ -18,7 +18,7 @@ if not defined PYEXE (
 )
 
 set "PORT=8765"
-echo Starting Text Eraser at http://127.0.0.1:%PORT%/
+echo Starting TextEraser at http://127.0.0.1:%PORT%/
 echo.
 "%PYEXE%" -m uvicorn text_eraser.webapp:app --host 127.0.0.1 --port %PORT%
 pause

@@ -6,7 +6,7 @@ import numpy as np
 import cv2
 from PIL import Image
 
-ROOT = "D:/Code/Project/Python/TextPatch"
+ROOT = "D:/Code/Project/Python/TextEraser"
 sys.path.insert(0, ROOT)
 from text_eraser.eraser import erase_text
 from text_eraser.patch_fill import inpaint as pm_inpaint

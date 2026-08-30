@@ -1,11 +1,11 @@
 import sys
-sys.path.insert(0, "D:/Code/Project/Python/TextPatch")
+sys.path.insert(0, "D:/Code/Project/Python/TextEraser")
 import numpy as np
 from PIL import Image
 import cv2
 from text_eraser.text_select import detect_text_mask, _deglow_full_green_v2
 
-ROOT = "D:/Code/Project/Python/TextPatch"
+ROOT = "D:/Code/Project/Python/TextEraser"
 
 def load(t):
     return np.array(Image.open(f"{ROOT}/data/_glowcheck/{t}.png").convert("RGB"))

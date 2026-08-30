@@ -3,10 +3,12 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# PyPI 发行名: text-eraser (原名 textpatch 与既有 text-patch 过于相似被 PyPI 拒绝)
-# import 包名: text_eraser
+# PyPI 发行名 text-eraser 与 import 包名 text_eraser 对应 (PyPI 对 -/_ 归一化为同名);
+# 0.1.x 期间的曾用导入名 textpatch 已于 0.2.0 弃用。
+# cv2 (OpenCV) 不进依赖: 由使用方环境提供 opencv-python 或 opencv-python-headless
+# (二者严禁同环境混装, OpenCV 官方禁止), 因此仅声明运行时必需的 numpy/Pillow。
 name = "text-eraser"
-version = "0.1.2"
+version = "0.2.0"
 description = "图片文字擦除工具：DBNet 文字检测 + PatchMatch 内容识别填充 + 去发光，附本地 Web 界面"
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,16 +30,15 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
     "numpy>=1.26",
-    "opencv-python-headless>=4.8",
     "Pillow>=10.0",
-    "python-multipart>=0.0.9",
-    "onnxruntime>=1.16",
 ]
 
 [project.optional-dependencies]
+# Web 界面 (text-eraser / python -m text_eraser)
+web = ["fastapi>=0.110", "uvicorn[standard]>=0.27", "python-multipart>=0.0.9"]
+# DBNet 文字检测 (ONNX 推理)
+ml = ["onnxruntime>=1.16"]
 dev = ["pytest>=8.0", "build>=1.0", "twine>=5.0"]
 
 [project.urls]

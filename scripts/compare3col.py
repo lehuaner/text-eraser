@@ -6,10 +6,10 @@ import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 
-IMG = r"D:\Code\Project\Python\TextPatch\data\needExtractAndPatch.png"
-OLD = r"D:\Code\Project\Python\TextPatch\data\server_result.png"
-NEW = r"D:\Code\Project\Python\TextPatch\data\server_result_v2.png"
-OUT = r"D:\Code\Project\Python\TextPatch\data\result"
+IMG = r"D:\Code\Project\Python\TextEraser\data\needExtractAndPatch.png"
+OLD = r"D:\Code\Project\Python\TextEraser\data\server_result.png"
+NEW = r"D:\Code\Project\Python\TextEraser\data\server_result_v2.png"
+OUT = r"D:\Code\Project\Python\TextEraser\data\result"
 
 rgb = np.array(Image.open(IMG).convert("RGB"))
 old = np.array(Image.open(OLD).convert("RGB"))

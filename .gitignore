@@ -13,7 +13,7 @@ data/
 *.bin
 
 # 下载的模型文件（自动下载，勿入库）
-textpatch/models/det/*.onnx
+text_eraser/models/det/*.onnx
 
 # 工具记忆
 .workbuddy/
