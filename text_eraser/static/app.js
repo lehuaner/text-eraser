@@ -476,11 +476,11 @@
       el.innerHTML =
         `<button class="hist-del" title="删除此记录">✕</button>` +
         `<img src="data:image/png;base64,${it.thumb_b64}" alt="">` +
-        `<div class="meta">${(it.name || "image").slice(0, 26)}${it.w ? ` · ${it.w}×${it.h}` : ""}<br>${date}</div>`;
+        `<div class="meta">${(it.id || "unknown").slice(0, 26)}${it.w ? ` · ${it.w}×${it.h}` : ""}<br>${date}</div>`;
       el.addEventListener("click", () => selectHistoryImage(it));
       el.querySelector(".hist-del").addEventListener("click", (e) => {
         e.stopPropagation();
-        deleteHistory(it.id, it.name || "image");
+        deleteHistory(it.id, it.id || "unknown");
       });
       histGrid.appendChild(el);
     }
@@ -506,12 +506,12 @@
 
   /* 点击历史缩略图 → 作为"当前选择图片"（走选择图片路径，需再点擦除） */
   async function selectHistoryImage(it) {
-    histNoteEl(`已加载「${it.name}」到预览 — 点“擦除”或调整参数后再跑`, "ok");
+    histNoteEl(`已加载「${it.id}」到预览 — 点“擦除”或调整参数后再跑`, "ok");
     try {
       const r = await fetch(`/api/history/${it.id}/orig`);
       if (!r.ok) throw new Error(r.statusText);
       const blob = await r.blob();
-      const f = new File([blob], it.name || "history.png", { type: "image/png" });
+      const f = new File([blob], it.id || "history.png", { type: "image/png" });
       const dt = new DataTransfer();
       dt.items.add(f);
       fileInput.files = dt.files;
@@ -530,15 +530,15 @@
     try {
       for (let i = 0; i < histItems.length; i++) {
         const it = histItems[i];
-        histNoteEl(`正在处理 ${i + 1}/${histItems.length} — ${it.name}`, "busy");
+        histNoteEl(`正在处理 ${i + 1}/${histItems.length} — ${it.id}`, "busy");
         const r = await fetch(`/api/history/${it.id}/orig`);
         if (!r.ok) continue;
         const blob = await r.blob();
-        const f = new File([blob], it.name || "history.png", { type: "image/png" });
-        const d = await submitErase(f, it.name || "history.png");
+        const f = new File([blob], it.id || "history.png", { type: "image/png" });
+        const d = await submitErase(f, it.id || "history.png");
         // 记录批量结果 → 翻页可回看每一张
         d.orig_data_url = URL.createObjectURL(blob);
-        batchResults.push({ name: it.name || "history.png", d });
+        batchResults.push({ name: it.id || "history.png", d });
         const card = histGrid.querySelector(`.hist-item[data-id="${it.id}"]`);
         if (card) card.classList.add("done");
         // 每处理完一张就把翻页条切到最新一张
