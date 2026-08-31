@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 # cv2 (OpenCV) 不进依赖: 由使用方环境提供 opencv-python 或 opencv-python-headless
 # (二者严禁同环境混装, OpenCV 官方禁止), 因此仅声明运行时必需的 numpy/Pillow。
 name = "text-eraser"
-version = "0.2.0"
+version = "0.2.1"
 description = "图片文字擦除工具：DBNet 文字检测 + PatchMatch 内容识别填充 + 去发光，附本地 Web 界面"
 readme = "README.md"
 license = { text = "MIT" }
