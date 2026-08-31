@@ -1235,7 +1235,17 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
     # 也要躲开晕尾 —— 暖背景上晕尾像素 greenness≈0 但 R−G 被压低(实测近环
     # 0~21px 中位 7 vs 远环 10), 贴边取样会把偏绿参考传满填充区。
     B = D_rg = D_gb = None
-    if zone.any() and zone.sum() < 0.8 * H * W:
+    # 测地背景场 B 的"背景源充足"判定: 整图非-zone、低饱和、非纯白纯黑像素
+    # 数 ≥ 阈值(至少 30 或 1% 像素)。原仅 zone<80% 时算 B; 此处放宽到
+    # zone≥80% 但仍有足够非zone背景像素的图(实测 1788077005814 等 86~99%
+    # 大发光图有 ~50~900 个非zone背景像素, 是真实背景, 可作 geodesic 源)。
+    # 放宽后: 大发光区也能复用 B+detail 重建, 把周围背景纹理/渐变插值进
+    # 发光区(而非平涂成单一常数); 小 zone / 暖背景行为不变。
+    _mx0 = np.maximum(np.maximum(r, g), b).astype(np.float32)
+    _mn0 = np.minimum(np.minimum(r, g), b).astype(np.float32)
+    _bg_src_ok = int(((~zone) & ((_mx0 - _mn0) < 30)
+                      & (_mx0 > 15) & (_mx0 < 240)).sum()) >= max(30, int(0.01 * H * W))
+    if zone.any() and (zone.sum() < 0.8 * H * W or _bg_src_ok):
         geo_mask = cv2.erode(zone.astype(np.uint8), k3, iterations=3) > 0
         _dout = cv2.distanceTransform((~zone).astype(np.uint8), cv2.DIST_L2, 5)
         _ring_clean = ((~zone) & (_dout >= 10.0) & (_dout <= 26.0)
@@ -1271,6 +1281,17 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
         glow = np.maximum(greenness + comp, 0)
     Gn = out[m_zone, 1].astype(np.float32) - glow[m_zone] * s
     out[m_zone, 1] = np.clip(Gn, 0, 255).astype(np.int16)
+
+    # 大发光区(zone≥80% H*W):
+    #   - 有足够非zone背景像素(1788077005814 等真实图): 上面已放宽算 B,
+    #     下方 B+detail 重建分支恢复背景纹理/渐变/分割线(非平涂)。
+    #   - 完全没有背景源(整图几乎都是发光, ~zone 过少): 重建无法传播,
+    #     此处回退到逐像素去色(R=G=B=通道均值)以保证至少中性、无红/黄绿。
+    if (not (d_warm > 0)) and zone.any() and zone.sum() >= 0.8 * H * W and B is None:
+        _m = zone & ~text_stroke
+        if _m.any():
+            _avg = out[_m].mean(axis=1, keepdims=True).astype(np.int16)
+            out[_m] = np.repeat(_avg, 3, axis=1)
 
     # 5) 方案B: 发光区(非文字)低频颜色场延拓重建 —— 光晕是低频现象(平滑的
     #    亮/色偏移)。把「背景低频色场」从 zone 边界平滑延展进发光区, 再叠回
@@ -1320,9 +1341,17 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                                 iterations=1) > 0
     # zone 占比过大的(≈整图都是"发光区", 如 635 的 75x78 小图)没有背景源,
     # 羽化重建无从传播 → 跳过, 维持纯减绿(此时保护圈外几乎无区域)。
-    if fb.any() and zone.sum() < 0.8 * H * W and B is not None:
+    if fb.any() and B is not None:
         # (B 与 D_rg/D_gb 已在减绿前算好 —— 见「测地背景场」块。此处只做对齐
         #  与重建。)
+        # 杂色全面修复(1788077005814 修复): halo(fb 区)此前从原始 rgb 提 detail,
+        # 原始 rgb 仍带绿铸 → detail 把绿铸高频频谱带进重建 → halo 在文字边 8px
+        # 内出现绿杂色(chroma_std 1.48 vs 干净背景 0.76)。改用「减绿后的 out」
+        # 做 detail 源: 此时 G 已减去绿光(只动 G 通道), 高频不再含绿铸 → halo
+        # 杂色消除, 同时保留非绿高频(原图真实边缘)以维持纹理。out 在下方会
+        # 被本段 rebuilt 覆写, 故先存 out_pre 快照。GaussianBlur(σ=2)仅作高频
+        # 提取, 与"模糊修杂色"语义不同。
+        out_pre = out.copy()
         # 偏纯色背景的调和填充(d_warm>0 门控): 测地单源场有「源块拼接」的低频
         # 色差(556 实测 fb 内 30~60px 尺度的明暗补丁, 加大高斯平滑无效)。
         # 但调和插值(ΔB=0)是无结构的 —— 跨越 zone 边界的结构(米黄分界线/暗色
@@ -1362,7 +1391,7 @@ def _deglow_full_green_v2(rgb: np.ndarray, tmask: np.ndarray,
                     B = _Bh
             elif _init is not None:
                 B = _init
-        imgf = rgb.astype(np.float32)
+        imgf = out_pre.astype(np.float32)
         dtext = cv2.distanceTransform((~protect2).astype(np.uint8) * 255,
                                       cv2.DIST_L2, 5)
         dw = np.clip(dtext / 8.0, 0.0, 1.0)[..., None]

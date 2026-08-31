@@ -128,7 +128,17 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         grad0 = np.sqrt(gx0 ** 2 + gy0 ** 2)
         ring0 = (cv2.dilate(m.astype(np.uint8), np.ones((41, 41), np.uint8)) > 0) & ~m
         tex = float(np.median(grad0[ring0])) if ring0.any() else 0.0
-        if span >= flat_span and tex < flat_tex:
+        # 杂色全面修复(1788077005814): 此前要求 span>=40 + tex<15 才走 TELEA,
+        # 漏掉了"局部均匀/平滑渐变"(文字完全嵌在光滑背景里, 环带四边中位
+        # 几乎相等 span≈0, tex<15)—— 这类图正是杂色高发区: patchmatch 7x7
+        # 直拷无法维持渐变连续, 产出 flat+色差块(填区 chroma_std≈2.4 vs
+        # 背景 0.76), 形成肉眼暗斑。环带纹理低(tex<flat_tex)即视为"可扩散"
+        # 背景, TELEA 把局部梯度平滑插值进洞, 保留渐变(纹理)同时消除杂色。
+        # 既不是"假设纯色"(梯度仍被插值)也不是"模糊"(PDE 修复, 沿结构传播)。
+        # 仍保留 n>=2 边带检查(避免极小 mask 边带不足时误触发); span 检查
+        # 移除——对真正光滑背景(span≈0)同样适用。纹理背景(tex>=flat_tex)
+        # 仍走 patchmatch, 不损失纹理。
+        if tex < flat_tex:
             out = cv2.inpaint(np.clip(img, 0, 255).astype(np.uint8),
                               m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
             return out
