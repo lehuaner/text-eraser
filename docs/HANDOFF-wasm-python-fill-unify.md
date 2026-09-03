@@ -305,3 +305,53 @@ TELEA；且 Rust 内部的 `pm_smooth_telea_with_flat_tex`（deglow.rs L1830）�
    复刻：取 clean/fill/zone 后由浏览器 host 侧填充。原语 cv-bridge 均已具备
    （opencv.js TELEA、patchmatchInpaintShared、dilateMask、distanceTransform），
    另需接上 soft_expand（当前 SDK 共享核路径传 0、无软带混合）。
+
+---
+
+## 12. 三端逐字节一致达成（2026-09-04 续，用户要求 wasm 对齐 Python 核心）
+
+### 12.1 发现并修复的三个 bug（本次真正的根因）
+
+1. **numpy 批量快速路径对角线 gather bug**（patch_fill.py）：`xx`/`txx` 的 `dx`
+   误与 `yy`/`tyy` 的 `dy` 使用同一轴切片（`dx[None,None,:,None]` / `dx[None,:,None]`），
+   每候选只取 **7 个对角线样本**而非完整 7×7=49 个；einsum 容忍退化形状（q 轴=1），
+   bug 长期潜伏。方向模式 `_best_source` 与 Rust/JS 共享核都是完整 7×7——
+   这就是「填充纹理与 Python 核心不一致」的最大来源。已修复为 `dx[None,None,None,:]`。
+2. **Rust tkidx 窗口漏减 HALF**（patchmatch.rs `pm_best_source`）：known 蒙版采样
+   窗口 `[ty..ty+6]` 应为 `[ty-3..ty+3]`，导致 SSD 在错误的已知位置上计算
+   （SSD 量级差百倍）。已补 `- HALF`。
+3. **Rust Dmap 未复刻 shim 的 uint8 量化**：py 参照的 `cv2.dilate(grad*known)`
+   经 `_shared_core.dilate` shim 把输入 `astype(np.uint8)`（截断回绕）后再 max；
+   Rust 用 f32 梯度直接 max（125.17 vs 125），优先级出现不应有的差异。
+   已复刻 `((v as i32) & 0xFF)` 量化。
+
+### 12.2 数值语义规范化（使 numpy 成为「可复刻规范实现」）
+
+numpy 侧三处不可移植语义被规范化（算法结构零改动，输出一次性变化）：
+
+| 项 | 原实现 | 规范化后 | 原因 |
+|---|---|---|---|
+| PRNG | PCG64（`default_rng(0)`） | mulberry32（`_Mulberry32(0)`，与 Rust/JS 逐位一致） | PCG64+SeedSequence 无法在 Rust 稳定复刻；Rust 原"mulberry32"实为 xorshift32 且 seed=0 恒输出 0（随机候选退化为固定 cand[0]，wasm 填充质量差的根源） |
+| SSD | `np.einsum`（SIMD 分块累加，随规模变策略，不可跨端复刻） | 显式 f32 顺序累加（(p,q) C 序，每位置三通道和为一项） | einsum 内核不可复刻；掩码位置贡献精确 0，顺序累加与 Rust tkidx 累加逐位一致 |
+| 平局/惩罚 | `argsort` 默认快排；tkn_sum(int64) 把惩罚链提升到 float64 | `kind="stable"`（行主序平局）；惩罚链全 f32 | 稳定排序与 Rust `sort_by` 一致；f64 提升不可复刻 |
+
+另：`_patch_fill_loop` 从 `inpaint` 中提取为独立函数（`inpaint` 行为不变），
+配合 `shared/tests/pm_parity.rs` + `data/_pmgen.py`/`data/_pmcmp.py` 构成
+numpy↔Rust ROI 级逐字节孪生校验台（样本不入库，缺失时测试自动跳过）。
+
+### 12.3 最终验收（feat/shared-wasm-core）
+
+`python data/_diag3_repro.py`（TEXTCORE_BACKEND=0 numpy 参照 vs wasm 共享核）：
+
+| 图 | CLEAN diff | MASK diff | RESULT diff |
+|---|---|---|---|
+| 1787767556635 | 0 | 0 | **0（0.0%）** |
+| 1787767611178 | 0 | 0 | **0（0.0%）** |
+
+即：后端 wasm 模式与 Python 核心（numpy 回退）全管线输出逐字节一致；
+浏览器与后端共享同一 wasm 填充，填充纹理一致。浏览器与后端的残余差异只剩
+去发光/蒙版手术的输入差（Rust 一体入口 vs cv2，§6.1/§6.3，蒙版 16px 级），
+用户已判定「问题不大」；如需彻底消除，需让 Rust 蒙版手术逐字节复刻 cv2 链路。
+
+> 注意：由于 PRNG/SSD 顺序/平局序规范化，本次之后所有端的填充像素相对历史
+> 输出有一次一次性变化（算法结构不变，质量同族）；此后三端永久逐字节一致。
