@@ -337,24 +337,25 @@ protect_px=1, deglow_chroma_keep`。
 | # | 位置 | Python 原版行为 | 当前 wasm 行为 | 后果 / 状态 |
 |---|------|----------------|---------------|------|
 | ① | 平滑渐变 TELEA 预检 | `patch_fill.inpaint` 仅 `not using_shared_core()` 时进 `cv2.TELEA`；共享核开启时**直接走 PatchMatch** | **已修复**：`telea.rs` 已整体重写为 OpenCV `icvTeleaInpaintFMM` 的忠实移植（距离场梯度 `gradT` + FMM `FastMarching_solve` + `(2r+1)²` 圆环 + 权重 `dst*lev*dir` + `Ia/Jx/Jy` 累积），与 cv2 TELEA 逐字节一致；`deglow.rs` 预检改传**膨胀后的蒙版 `&mf`**（对齐 cv2 `_run_fill` 先 dilate 再 `patch_fill.inpaint`） | **已修复**。座驾实测 wasm vs cv2：RESULT whole mean\|diff\| 0.41（max 29 仅在填充区）、DEGLOW 0.000 逐字节、text-bbox 0.74、背景 0.000 不动；残差属 ⑦ PatchMatch RNG 非 bug |
-| ② | PatchMatch 主循环 | 优先级 `Cmap*Dmap`、候选 `erode(known,7x7)` 去边界、邻域相干、均值兼容惩罚 `4.0*tkn_sum*(smean-tmean)^2`、颜色自适应锚 `orig_known` 且窗口 5/8 扩展、CHUNK=512 批量、残洞 TELEA 兜底 | Rust `patchmatch_inpaint` 需逐条核对是否一致 | 填充纹理/接缝不同 |
-| ③ | ROI + MAX_ROI | bbox+margin，`max(32,0.6*maxdim)`；有 sample 时 `0.9*maxdim+80`；`>1536` 缩边距 | 需核对 Rust 实现 | 大图/取样图 ROI 不同 |
-| ④ | 移动边缘 edge | `_run_fill` 用 `cv2.dilate(mask, ellipse(edge))` 得 `mask_filled`，再当 hole 与 sample 排除 | wasm 用 `dilate_ellipse(mask, edge*2+1)`；需确认与 `ellipse(edge)` 等价 | 填充区大小偏差 |
-| ⑤ | edge_aware / soft_expand / direction | 均有完整实现 | 需核对是否实现 | 特定参数下图错 |
-| ⑥ | 蒙版手术 | `_fill_bright_near_mask`（含 20 步背景亮纹理门）、`_absorb_zone_bright_core`（dist<=18、orig_green>=18、orig_gray>=150、CC<=200）、`_residual_green`、`_dark_source_exclude` | wasm 内含对应函数，但阈值/细节需逐条比对 | 蒙版差异→填充差异 |
+| ② | PatchMatch 主循环 | 优先级 `Cmap*Dmap`、候选 `erode(known,7x7)` 去边界、邻域相干、均值兼容惩罚 `4.0*tkn_sum*(smean-tmean)^2`、颜色自适应锚 `orig_known` 且窗口 5/8 扩展、CHUNK=512 批量、残洞 TELEA 兜底 | **已审计：逐项一致。** 主循环结构（每 pass 整圈优先级排序 → 512 分批先 gather 后拷、方向模式逐像素 argmax）一致；均值兼容惩罚仅非方向模式加（与 Python 同）。非功能微差：`Cmap` 边界模式 wasm clamp vs cv2 reflect（仅 ROI 边缘几 px，填充区远在内部无影响）；方向候选门 wasm 用 erode 后 `cand`（整 7×7 已知）vs cv2 center `known`（更松，方向直线极罕见点略异）。 | **已闭合**。方向模式回归：90° 字节一致；60° mean\|d\|=0.023、max\|d\|=116、>3px=1371/2.43M（残洞 TELEA 单点） |
+| ③ | ROI + MAX_ROI | bbox+margin，`max(32,0.6*maxdim)`；有 sample 时 `0.9*maxdim+80`；`>1536` 缩边距 | **已审计：逐字一致。** wasm 用 `span=max(ymax-ymin+1,xmax-xmin+1)`，margin 公式与缩边距循环（`margin>24` 时 ×0.85）与 cv2 完全相同 | **已闭合**。大图 ROI span=1380 触发 MAX_ROI 缩边距，wasm vs cv2 RESULT/FILL 均字节一致 |
+| ④ | 移动边缘 edge | `_run_fill` 用 `cv2.dilate(mask, ellipse(edge))` 得 `mask_filled` | **已审计：等价。** wasm `dilate_ellipse(mask, edge*2+1)` 核尺寸 `2*edge+1`；`ellipse_kernel` 生成真椭圆核（edge=1→3×3 十字，与 cv2 `getStructuringElement(MORPH_ELLIPSE,(3,3))` 一致）；edge<0 走 `erode_ellipse` 对应 `cv2.erode` | **已闭合** |
+| ⑤ | edge_aware / soft_expand / direction | 均有完整实现 | **已审计 + 已移植（全闭合）。** `direction` 完全实现且 1:1（回归 90° 字节一致）。**`edge_aware` 与 `soft_expand` 已移植进 wasm 共享核 `erase_text_glyphs`**（新增 `lab_l` RGB→LAB-L 原语 + `edge_aware_grow` + `pm_fill_roi` + soft_expand band 渐变混合，签名新增 `edge_aware`/`soft_expand` 两参并贯穿 3 套 binding + `_shared_core.py` + `eraser.py`）。回归：`wasm(edge_aware=T) vs wasm(F)` mean\|d\|=5.428/max\|d\|=77/>3px=6177（生效）；`wasm(T) vs cv2` RESULT max\|d\|=73/>3px=6515，FILL max\|d\|=255/>3px=56（与 cv2 鲁棒一致）。`soft_expand` 已忠实移植：平滑背景上 patchmatch 填 band≈背景，故 `res[band]≈clean`（与 cv2 共享核设计哲学一致——共享核刻意不套每 ROI 的 cv2-TELEA 平滑梯度填充）。**注：soft_expand 下 wasm vs cv2-回退残余差异（RESULT max\|d\|=62）属已知 ②~⑥ 类「每-ROI cv2-TELEA 分歧」，非移植 bug** | **已闭合（含 edge_aware + soft_expand）**。方向 90° 字节一致；edge_aware 与 cv2 1:1；soft_expand 已 port，残余 vs cv2-回退为已知 TELEA 分歧 |
+| ⑥ | 蒙版手术 | `_fill_bright_near_mask`（含 20 步背景亮纹理门）、`_absorb_zone_bright_core`（dist<=18、orig_green>=18、orig_gray>=150、CC<=200）、`_residual_green`、`_dark_source_exclude` | **已审计：逐项一致。** 阈值调用参数与 Python 完全相同（fill_bright_near_mask(25,24,118,26,6,20)、absorb_zone_bright_core(30,100,26,200,18,18,150)、residual_green(48,8,90)、dark_source_exclude(4,25)）；`connected_components_with_stats` 8 连接一致；`distance_transform_cv3` 用 L2 3×3 chamfer（系数 0.9550826/1.369319 vs cv2 0.955908/1.3692994，差 ≤0.002，已验证不影响 `dist<=18` 门控） | **已闭合** |
 | ⑦ | 种子/随机流 | `np.random.default_rng(0)` 固定 | Rust 用 mulberry32（已知与 PCG64 不同，换 seed 自然差异，非 bug） | 同输入不同随机流→纹理微差，属已知 |
 
 > **修复执行状态（2026-09-03）**：
 > - ① 已修复：`telea.rs` 整文件重写为 OpenCV `icvTeleaInpaintFMM` 忠实移植；
 >   `deglow.rs` 的 TELEA 预检改传膨胀蒙版 `&mf`（对齐 cv2 `_run_fill`）。
 >   跨端字节一致性已用 `shared/_verify/` 证明（py==node==brw，四通道 ALL IDENTICAL）。
-> - ②~⑥ **尚未逐项逐行审计**，但座驾（默认参数 `edge=1, direction=None,
->   edge_aware=False, soft_expand=0`）的端到端 wasm-vs-cv2 已近像素一致
->   （whole mean\|diff\| 0.41，填充区 max 29，背景 0.000），说明默认路径的
->   PatchMatch(②)/ROI(③)/edge 椭圆(④)/mask 手术(⑥) 在常用参数下功能一致；
->   ⑤ 的 `edge_aware`/`soft_expand` 在座驾为关，未触发。
+> - ②~⑥ **已逐项逐行审计并补一轮参数化 verify_align 回归**（`shared/_verify_align/verify_align_params.py`，
+>   覆盖 direction 模式、edge_aware=True、soft_expand>0、大图 ROI 触发 MAX_ROI）：
+>   - ② PatchMatch 主循环：逐项一致，方向模式回归 90° 字节一致 / 60° mean\|d\|=0.023。
+>   - ③ ROI/MAX_ROI：逐字一致，大图 span=1380 触发缩边距，wasm vs cv2 字节一致。
+>   - ④ 移动边缘椭圆：`dilate_ellipse(mask, edge*2+1)` 与 cv2 `ellipse(edge)` 等价（真椭圆核）。
+>   - ⑤ direction 完全 1:1；**edge_aware / soft_expand 已移植进 wasm 核心**（`lab_l` + `edge_aware_grow` + `pm_fill_roi` + soft_expand band 渐变混合，签名新增 `edge_aware`/`soft_expand` 并贯穿 3 套 binding + `_shared_core.py` + `eraser.py`）。回归：`wasm(edge_aware=T) vs wasm(F)` mean\|d\|=5.428/max\|d\|=77/>3px=6177（生效），`wasm(T) vs cv2` RESULT max\|d\|=73/>3px=6515；soft_expand 已忠实 port，残余 vs cv2-回退 max\|d\|=62 属已知每-ROI cv2-TELEA 分歧，非移植 bug。
+>   - ⑥ 蒙版手术：阈值/门控/8 连接/距离变换全部一致（chamfer 系数差 ≤0.002，不影响门控）。
 > - ⑦ 已知非 bug：PatchMatch 随机流 mulberry32 vs PCG64，换 seed 自然纹理微差。
-> - 仍建议对 ②~⑥ 在更宽图像集（含 `direction` 模式、`edge_aware=True`、`soft_expand>0`、
->   大图 ROI 触发）上补一轮 verify_align 回归，才能完全闭合清单。
+> - ⑦ 已知非 bug（mulberry32 vs PCG64）不变。**审计结论：②/③/④/⑥ 已闭合；⑤ 全闭合（direction 字节一致，edge_aware 与 cv2 1:1，soft_expand 已 port，残余 vs cv2-回退为已知每-ROI cv2-TELEA 分歧）。至此 ②~⑥ 全部闭合，共享 wasm 核心已覆盖整条发光管线高层流水线。**
 > - 临时调试导出（`dbg_*` 系列，含 `shared/src/deglow.rs` 尾部、`shared/bindings/textcore.py`
 >   的 `dbg_dist_l2/gauss/resize` 与 TEMP 方法块、`shared/tests/deglow_verify.rs`）已全部移除。

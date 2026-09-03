@@ -296,7 +296,8 @@ async function deglowFullGreenV2(rgbF32, h, w, tmaskU8, strength, zoneRatio, zon
 // tmask2U8: optional Uint8Array H*W second detect to union in.
 // Returns [resultU8 H*W*3, fillU8 H*W, cleanU8 H*W*3, zoneU8 H*W].
 async function eraseTextGlyphs(rgbF32, h, w, tmaskU8, tmask2U8,
-  strength, zoneRatio, zoneExpand, protectPx, chromaKeep, edge, directionDeg, seed) {
+  strength, zoneRatio, zoneExpand, protectPx, chromaKeep, edge, directionDeg, seed,
+  edgeAware, softExpand) {
   await ready();
   const ex = _instance.exports;
   const n = h * w;
@@ -321,6 +322,8 @@ async function eraseTextGlyphs(rgbF32, h, w, tmaskU8, tmask2U8,
       edge == null ? 0 : edge,
       directionDeg == null ? -1.0 : directionDeg,
       (seed == null ? 0 : seed) >>> 0,
+      edgeAware == null ? 0 : edgeAware,
+      softExpand == null ? 0.0 : softExpand,
       pResult, pFill, pClean, pZone);
     m = ex.memory.buffer;
     const result = new Uint8Array(n * 3);

@@ -328,7 +328,8 @@ def deglow_full_green_v2(rgb, tmask, strength: float = 1.0, zone_ratio: float = 
 def erase_text_glyphs(rgb, tmask, tmask2=None, strength: float = 1.0,
                       zone_ratio: float = 0.6, zone_expand: int = 0,
                       protect_px: int = 0, chroma_keep: int = 0, edge: int = 0,
-                      direction_deg: float = -1.0, seed: int = 0):
+                      direction_deg: float = -1.0, seed: int = 0,
+                      edge_aware: int = 0, soft_expand: float = 0.0):
     """Single shared pipeline entry — run the FULL de-glow + mask-surgery +
     PatchMatch fill (browser + backend call this identically).
 
@@ -353,6 +354,6 @@ def erase_text_glyphs(rgb, tmask, tmask2=None, strength: float = 1.0,
             tm2 = np.ascontiguousarray(tmask2, dtype=np.uint8)
         return core.erase_text_glyphs(rgb_f, H, W, tm, tm2, strength, zone_ratio,
                                       zone_expand, protect_px, chroma_keep, edge,
-                                      direction_deg, seed)
+                                      direction_deg, seed, edge_aware, soft_expand)
     except Exception:
         return None

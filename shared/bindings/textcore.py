@@ -270,7 +270,8 @@ class TextCore:
                           strength: float = 1.0, zone_ratio: float = 0.6,
                           zone_expand: int = 0, protect_px: int = 0,
                           chroma_keep: int = 0, edge: int = 0,
-                          direction_deg: float = -1.0, seed: int = 0) -> tuple:
+                          direction_deg: float = -1.0, seed: int = 0,
+                          edge_aware: int = 0, soft_expand: float = 0.0) -> tuple:
         """Single shared pipeline entry — run the FULL de-glow + mask-surgery +
         PatchMatch fill (browser + backend call this identically).
 
@@ -302,6 +303,7 @@ class TextCore:
                 float(strength), float(zone_ratio), int(zone_expand),
                 int(protect_px), int(chroma_keep), int(edge),
                 float(direction_deg), int(seed) & 0xFFFFFFFF,
+                int(edge_aware), float(soft_expand),
                 p_result, p_fill, p_clean, p_zone)
             result = np.frombuffer(bytes(self.mem.read(self.store, p_result, p_result + n * 3)),
                                    dtype=np.uint8).reshape(h, w, 3).copy()

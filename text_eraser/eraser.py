@@ -716,7 +716,8 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
             zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
             protect_px=deglow_protect_px, chroma_keep=chroma_i,
             edge=edge, direction_deg=direction if direction is not None else -1.0,
-            seed=0)
+            seed=0, edge_aware=1 if edge_aware else 0,
+            soft_expand=soft_expand)
         if res is not None:
             result, fill, clean, zone = res
             mask_filled = fill

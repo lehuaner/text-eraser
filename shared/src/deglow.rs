@@ -887,6 +887,169 @@ fn distance_transform_cv3(mask: &[u8], h: usize, w: usize) -> Vec<f32> {
     d
 }
 
+// ---- shared PatchMatch fill helper + edge-aware grow -----------------------
+
+/// cv2.cvtColor(RGB2LAB) L-channel, packed to [0,255] the same way cv2 stores the
+/// u8 LAB array (`saturate_cast<uchar>(L * 255/100)`, round-half-to-even). Used only
+/// by `edge_aware_grow`.
+fn lab_l(r: f32, g: f32, b: f32) -> f32 {
+    let r = (r / 255.0).clamp(0.0, 1.0);
+    let g = (g / 255.0).clamp(0.0, 1.0);
+    let b = (b / 255.0).clamp(0.0, 1.0);
+    let lin = |c: f32| -> f32 {
+        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    };
+    let r = lin(r); let g = lin(g); let b = lin(b);
+    let x = r * 0.412453 + g * 0.357580 + b * 0.180423;
+    let y = r * 0.212671 + g * 0.715160 + b * 0.072169;
+    let z = r * 0.019334 + g * 0.119193 + b * 0.950227;
+    let x = x / 0.950456;
+    let y = y / 1.0;
+    let z = z / 1.088754;
+    let f = |t: f32| -> f32 {
+        if t > 0.008856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 }
+    };
+    let l = 116.0 * f(y) - 16.0; // [0,100]
+    cv_round(l * 255.0 / 100.0)
+}
+
+/// Median of an already-sorted slice; average of the two middle elements for even length.
+fn median_sorted(v: &[f32]) -> f32 {
+    let m = v.len();
+    if m == 0 { return 0.0; }
+    if m % 2 == 1 { v[m / 2] } else { (v[m / 2 - 1] + v[m / 2]) / 2.0 }
+}
+
+/// Rust port of `text_eraser/eraser.py::_edge_aware_grow`. Grows `mask_filled` by
+/// merging nearby original pixels whose LAB-L luminance lies inside the text band
+/// `(band_lo, band_hi)`; erodes the candidate once to drop isolated specks, then
+/// re-ORs the original mask so the hole is never shrunk.
+fn edge_aware_grow(rgb: &[f32], mask_filled: &[u8], h0: usize, w0: usize) -> Vec<u8> {
+    let n = h0 * w0;
+    if !mask_filled.iter().any(|&v| v != 0) {
+        return mask_filled.to_vec();
+    }
+    let lum: Vec<f32> = (0..n).map(|i| lab_l(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2])).collect();
+    let mut text_vals: Vec<f32> = Vec::with_capacity(n);
+    let mut bg_vals: Vec<f32> = Vec::with_capacity(n);
+    for i in 0..n {
+        if mask_filled[i] != 0 { text_vals.push(lum[i]); }
+        else { bg_vals.push(lum[i]); }
+    }
+    if text_vals.is_empty() { return mask_filled.to_vec(); }
+    let lo = text_vals.iter().cloned().fold(f32::INFINITY, f32::min);
+    let hi = text_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    bg_vals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let bg = median_sorted(&bg_vals);
+    let band_lo = (bg + lo) / 2.0;
+    let band_hi = hi + (hi - lo) * 0.5;
+    let cand = dilate_ellipse(mask_filled, h0, w0, 2 * 8 + 1); // ellipse(8)
+    let mut grown = vec![0u8; n];
+    for i in 0..n {
+        if cand[i] != 0 && lum[i] >= band_lo && lum[i] <= band_hi {
+            grown[i] = 255;
+        }
+    }
+    grown = erode_ellipse(&grown, h0, w0, 2 * 1 + 1); // ellipse(1)
+    for i in 0..n {
+        if mask_filled[i] != 0 { grown[i] = 255; }
+    }
+    grown
+}
+
+/// Run the shared PatchMatch fill over `hole` (H*W u8, 0/255) and return the full
+/// H*W*3 f32 image with the hole filled and everything else copied from `clean`.
+/// ROI margin + MAX_ROI shrink mirror `text_eraser/patch_fill.py::inpaint`. `excl`
+/// (H*W u8, 0/1) marks sample-exclusion pixels (residual green / dark source).
+fn pm_fill_roi(
+    clean: &[f32], hole: &[u8], excl: &[u8],
+    h0: usize, w0: usize,
+    direction_deg: f32, seed: u32,
+) -> Vec<f32> {
+    let n = h0 * w0;
+    let mut res: Vec<f32> = clean.to_vec();
+    let mut ymin = h0; let mut ymax = 0usize;
+    let mut xmin = w0; let mut xmax = 0usize;
+    let mut any = false;
+    for y in 0..h0 {
+        for x in 0..w0 {
+            if hole[y * w0 + x] != 0 {
+                any = true;
+                if y < ymin { ymin = y; }
+                if y > ymax { ymax = y; }
+                if x < xmin { xmin = x; }
+                if x > xmax { xmax = x; }
+            }
+        }
+    }
+    if !any { return res; }
+    let span = ((ymax - ymin + 1) as f32).max((xmax - xmin + 1) as f32);
+    let mut margin = (32.0f32).max((0.6 * span).round());
+    margin = margin.max((0.9 * span).round()).max(80.0);
+    let mut margin = margin as i64;
+    let mut ry0 = ((ymin as i64) - margin).max(0) as usize;
+    let mut ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
+    let mut rx0 = ((xmin as i64) - margin).max(0) as usize;
+    let mut rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
+    while ((ry1 - ry0).max(rx1 - rx0) as i64) > 1536 && margin > 24 {
+        margin = (margin as f64 * 0.85) as i64;
+        ry0 = ((ymin as i64) - margin).max(0) as usize;
+        ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
+        rx0 = ((xmin as i64) - margin).max(0) as usize;
+        rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
+    }
+    let sh = ry1 - ry0;
+    let sw = rx1 - rx0;
+    let sub_n = sh * sw;
+    let mut sub_in = vec![0f32; sub_n * 3];
+    let mut sub_mf = vec![0u8; sub_n];
+    let mut sub_s = vec![0u8; sub_n];
+    for y in 0..sh {
+        for x in 0..sw {
+            let si = (y * sw + x) * 3;
+            let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
+            sub_in[si] = clean[gi];
+            sub_in[si + 1] = clean[gi + 1];
+            sub_in[si + 2] = clean[gi + 2];
+            let mi = y * sw + x;
+            let gmi = (y + ry0) * w0 + (x + rx0);
+            sub_mf[mi] = hole[gmi];
+            let mut s = if hole[gmi] != 0 { 0u8 } else { 255u8 };
+            if excl[gmi] != 0 { s = 0; }
+            sub_s[mi] = s;
+        }
+    }
+    let p_in = crate::alloc(sub_n * 3 * 4);
+    let p_mf = crate::alloc(sub_n);
+    let p_s = crate::alloc(sub_n);
+    let p_out = crate::alloc(sub_n * 3 * 4);
+    {
+        let min = unsafe { std::slice::from_raw_parts_mut(p_in as *mut f32, sub_n * 3) };
+        let msl = unsafe { std::slice::from_raw_parts_mut(p_mf, sub_n) };
+        let ssl = unsafe { std::slice::from_raw_parts_mut(p_s, sub_n) };
+        for i in 0..sub_n * 3 { min[i] = sub_in[i]; }
+        for i in 0..sub_n { msl[i] = sub_mf[i]; ssl[i] = sub_s[i]; }
+    }
+    crate::patchmatch::patchmatch_inpaint(
+        p_in as *const f32, sh as i32, sw as i32, p_mf, p_s, 1, 7,
+        direction_deg, seed, p_out as *mut f32);
+    let out_f32 = unsafe { std::slice::from_raw_parts(p_out as *const f32, sub_n * 3) };
+    for y in 0..sh {
+        for x in 0..sw {
+            let si = (y * sw + x) * 3;
+            let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
+            res[gi] = out_f32[si];
+            res[gi + 1] = out_f32[si + 1];
+            res[gi + 2] = out_f32[si + 2];
+        }
+    }
+    crate::dealloc(p_in, sub_n * 3 * 4);
+    crate::dealloc(p_mf, sub_n);
+    crate::dealloc(p_s, sub_n);
+    crate::dealloc(p_out, sub_n * 3 * 4);
+    res
+}
+
 // ===========================================================================
 // MAIN: deglow_full_green_v2
 // ===========================================================================
@@ -1610,6 +1773,7 @@ pub extern "C" fn erase_text_glyphs(
     tmask_ptr: *const u8, tmask2_ptr: *const u8,
     strength: f32, zone_ratio: f32, zone_expand: i32, protect_px: i32, chroma_keep: i32,
     edge: i32, direction_deg: f32, seed: i32,
+    edge_aware: i32, soft_expand: f32,
     out_result_ptr: *mut u8, out_fill_ptr: *mut u8, out_clean_ptr: *mut u8, out_zone_ptr: *mut u8,
 ) {
     let h0 = h as usize;
@@ -1633,20 +1797,14 @@ pub extern "C" fn erase_text_glyphs(
     // 2) union of the two detects, then close.
     let mut mask = mask_union(tmask, tmask2, n);
     mask = mask_close(&mask, h0, w0);
-    // white-text bright-side completion (on the clean image).
     mask = fill_bright_near_mask(&clean_f32, &mask, h0, w0, 25.0, 24.0, 118, 26, 6, 20);
-    // bright cores isolated inside the glow zone.
     mask = absorb_zone_bright_core(&clean_f32, &rgb_f32, &mask, zone, h0, w0, 30.0, 100, 26, 200, 18, 18.0, 150.0);
 
     let empty = !mask.iter().any(|&v| v != 0);
     let use_dir = direction_deg > -1.0;
 
-    // Default result = clean (covers the empty-mask / nothing-to-fill case).
-    let mut result_u8: Vec<u8> = clean_u8.to_vec();
-
-    // Compute the dilated/eroded fill mask once; needed for out_fill in every
-    // non-empty path and for the non-glow TELEA early-exit below.
-    let mf: Vec<u8> = if empty {
+    // Compute the dilated/eroded fill mask (mirrors cv2 `_run_fill` step 1).
+    let mut mf: Vec<u8> = if empty {
         mask.clone()
     } else if edge > 0 {
         dilate_ellipse(&mask, h0, w0, edge * 2 + 1)
@@ -1655,21 +1813,24 @@ pub extern "C" fn erase_text_glyphs(
     } else {
         mask.clone()
     };
+    // 1b. edge-aware grow: merge nearby original pixels whose LAB-L falls inside the
+    // text luminance band (eats anti-aliased white edges / light strokes). cv2 applies
+    // this to `mask_filled` BEFORE the PatchMatch fill, which is what we mirror here.
+    if edge_aware != 0 && !empty {
+        mf = edge_aware_grow(&clean_f32, &mf, h0, w0);
+    }
 
-    // Non-glow images on lightly textured backgrounds: PatchMatch copies texture/
-    // text back and leaves visible text (e.g. 1787766251689, tex≈17). Use a more
-    // permissive TELEA threshold (20.0) so these near-smooth backgrounds diffuse
-    // via TELEA instead. Glow images keep the stricter 15.0 threshold inside
-    // patchmatch_inpaint; direction mode skips the pre-check entirely.
+    // result starts as the de-glowed image; overwritten by TELEA / PatchMatch below.
+    let mut result_u8: Vec<u8> = clean_u8.to_vec();
+
+    // Non-glow near-smooth backgrounds: diffuse with a more permissive TELEA (20.0)
+    // instead of PatchMatch (which would copy texture/text back in). Glow images keep
+    // the stricter 15.0 threshold inside patchmatch_inpaint; direction mode skips it.
     let mut skip_pm = false;
     if !empty && !use_dir && !zone_any {
-        // cv2 `_run_fill` dilates the mask *before* passing it to `patch_fill.inpaint`,
-        // so the TELEA precheck/fill must see the dilated hole `mf`, not the raw mask.
         if let Some(filled) = crate::patchmatch::pm_smooth_telea_with_flat_tex(
             &clean_f32, &mf, h0 as i32, w0 as i32, 20.0)
         {
-            // Near-smooth non-glow background: diffuse the hole with TELEA instead of
-            // PatchMatch, which would otherwise copy neighbouring texture/text back in.
             for i in 0..n * 3 {
                 result_u8[i] = clamp_f(filled[i], 0.0, 255.0) as u8;
             }
@@ -1677,104 +1838,58 @@ pub extern "C" fn erase_text_glyphs(
         }
     }
 
-    // `mask_filled` is what we write to out_fill: the dilated/eroded mask, or the
-    // (empty) mask itself when there is nothing to fill.
-    let mask_filled: Vec<u8> = if empty || skip_pm {
-        mf
-    } else {
+    // Final fill mask written to out_fill: the (possibly edge-aware-grown) hole.
+    let mask_filled: Vec<u8> = mf;
+
+    if !empty && !skip_pm {
         // residual-green + dark-source exclusions define the protected sample region.
         let mut excl = residual_green(&clean_f32, &mask, h0, w0, 48, 8, 90);
         if zone_any {
             let (dx, dx_any) = dark_source_exclude(&clean_f32, &mask, h0, w0, 4, 25.0);
             if dx_any != 0 { for i in 0..n { if dx[i] != 0 { excl[i] = 1; } } }
         }
-        let mut sample = vec![0u8; n];
-        for i in 0..n { sample[i] = if mf[i] != 0 { 0 } else { 255 }; }
-        for i in 0..n { if excl[i] != 0 { sample[i] = 0; } }
-        // final PatchMatch fill (shared with browser & backend). cv2's `_run_fill` passes the
-        // *dilated* `mask_filled` as the PatchMatch hole AND crops the ROI from the same dilated
-        // mask; the sample region is `255 - mask_filled` (exclude the dilated hole). We mirror
-        // that exactly: hole = `mf`, ROI bbox from `mf`, sample = (~mf minus excl), `mf` written
-        // to the output `mask_filled`.
-        let mut ymin = h0; let mut ymax = 0usize; let mut xmin = w0; let mut xmax = 0usize;
-        for y in 0..h0 {
-            for x in 0..w0 {
-                if mf[y * w0 + x] != 0 {
-                    if y < ymin { ymin = y; }
-                    if y > ymax { ymax = y; }
-                    if x < xmin { xmin = x; }
-                    if x > xmax { xmax = x; }
+        // main PatchMatch fill over the hole (single source of truth, shared with browser).
+        let mut res = pm_fill_roi(&clean_f32, &mask_filled, &excl, h0, w0, direction_deg, seed as u32);
+        // 3b. soft expand: a feathered band beyond the hole blends the original (de-glowed)
+        // image with a second PatchMatch fill of (hole ∪ band) so coverage grows without a
+        // hard halo. Mirrors cv2 `_run_fill` soft_expand.
+        if soft_expand > 0.0 {
+            let s = (soft_expand.min(150.0)).round() as i32; // s >= 1 for any soft_expand > 0
+            let band = {
+                let d = dilate_ellipse(&mask_filled, h0, w0, 2 * s + 1);
+                let mut b = vec![0u8; n];
+                for i in 0..n { if d[i] != 0 && mask_filled[i] == 0 { b[i] = 255; } }
+                b
+            };
+            if band.iter().any(|&v| v != 0) {
+                let union = {
+                    let mut u = mask_filled.clone();
+                    for i in 0..n { if band[i] != 0 { u[i] = 255; } }
+                    u
+                };
+                let filled_all = pm_fill_roi(&clean_f32, &union, &excl, h0, w0, direction_deg, seed as u32);
+                let inv = {
+                    let mut iv = vec![0u8; n];
+                    for i in 0..n { iv[i] = if mask_filled[i] != 0 { 0 } else { 255 }; }
+                    iv
+                };
+                let dst = distance_transform_cv3(&inv, h0, w0);
+                let sf = s as f32;
+                for i in 0..n {
+                    if band[i] != 0 {
+                        let a = clamp_f(1.0 - dst[i] / sf, 0.0, 1.0);
+                        let gi = i * 3;
+                        res[gi] = clean_f32[gi] * (1.0 - a) + filled_all[gi] * a;
+                        res[gi + 1] = clean_f32[gi + 1] * (1.0 - a) + filled_all[gi + 1] * a;
+                        res[gi + 2] = clean_f32[gi + 2] * (1.0 - a) + filled_all[gi + 2] * a;
+                    }
                 }
             }
         }
-        let span = ((ymax - ymin + 1) as f32).max((xmax - xmin + 1) as f32);
-        // margin: base = max(32, 0.6*span); sample always present -> max(., 0.9*span, 80)
-        let mut margin = (32.0f32).max((0.6 * span).round());
-        margin = margin.max((0.9 * span).round()).max(80.0);
-        let mut margin = margin as i64;
-        let mut ry0 = ((ymin as i64) - margin).max(0) as usize;
-        let mut ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
-        let mut rx0 = ((xmin as i64) - margin).max(0) as usize;
-        let mut rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
-        // ROI cap (matches cv2 MAX_ROI = 1536)
-        while ((ry1 - ry0).max(rx1 - rx0) as i64) > 1536 && margin > 24 {
-            margin = (margin as f64 * 0.85) as i64;
-            ry0 = ((ymin as i64) - margin).max(0) as usize;
-            ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
-            rx0 = ((xmin as i64) - margin).max(0) as usize;
-            rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
+        for i in 0..n * 3 {
+            result_u8[i] = clamp_f(res[i], 0.0, 255.0) as u8;
         }
-        let sh = ry1 - ry0;
-        let sw = rx1 - rx0;
-        let sub_n = sh * sw;
-        let mut sub_in = vec![0f32; sub_n * 3];
-        let mut sub_mf = vec![0u8; sub_n];
-        let mut sub_s = vec![0u8; sub_n];
-        for y in 0..sh {
-            for x in 0..sw {
-                let si = (y * sw + x) * 3;
-                let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
-                sub_in[si] = clean_f32[gi];
-                sub_in[si + 1] = clean_f32[gi + 1];
-                sub_in[si + 2] = clean_f32[gi + 2];
-                let mi = y * sw + x;
-                let gmi = (y + ry0) * w0 + (x + rx0);
-                sub_mf[mi] = mf[gmi];
-                sub_s[mi] = sample[gmi];
-            }
-        }
-        let p_in = crate::alloc(sub_n * 3 * 4);
-        let p_mf = crate::alloc(sub_n);
-        let p_s = crate::alloc(sub_n);
-        let p_out = crate::alloc(sub_n * 3 * 4);
-        {
-            let min = unsafe { std::slice::from_raw_parts_mut(p_in as *mut f32, sub_n * 3) };
-            let msl = unsafe { std::slice::from_raw_parts_mut(p_mf, sub_n) };
-            let ssl = unsafe { std::slice::from_raw_parts_mut(p_s, sub_n) };
-            for i in 0..sub_n * 3 { min[i] = sub_in[i]; }
-            for i in 0..sub_n { msl[i] = sub_mf[i]; ssl[i] = sub_s[i]; }
-        }
-        crate::patchmatch::patchmatch_inpaint(
-            p_in as *const f32, sh as i32, sw as i32, p_mf, p_s, 1, 7, direction_deg, seed as u32, p_out as *mut f32);
-        let out_f32 = unsafe { std::slice::from_raw_parts(p_out as *const f32, sub_n * 3) };
-        let res: Vec<f32> = out_f32.to_vec();
-        crate::dealloc(p_in, sub_n * 3 * 4);
-        crate::dealloc(p_mf, sub_n);
-        crate::dealloc(p_s, sub_n);
-        crate::dealloc(p_out, sub_n * 3 * 4);
-        // stitch the ROI inpaint result back into the full result (region outside the
-        // mask is unchanged == clean; only the masked region is filled).
-        for y in 0..sh {
-            for x in 0..sw {
-                let si = (y * sw + x) * 3;
-                let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
-                result_u8[gi] = clamp_f(res[si], 0.0, 255.0) as u8;
-                result_u8[gi + 1] = clamp_f(res[si + 1], 0.0, 255.0) as u8;
-                result_u8[gi + 2] = clamp_f(res[si + 2], 0.0, 255.0) as u8;
-            }
-        }
-        mf
-    };
+    }
 
     let result_out = unsafe { std::slice::from_raw_parts_mut(out_result_ptr, n * 3) };
     let fill_out = unsafe { std::slice::from_raw_parts_mut(out_fill_ptr, n) };
@@ -1787,4 +1902,3 @@ pub extern "C" fn erase_text_glyphs(
     crate::dealloc(p_core, n);
     crate::dealloc(p_zone, n);
 }
-
