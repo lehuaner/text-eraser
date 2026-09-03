@@ -31,7 +31,9 @@ from text_eraser.eraser import erase_text
 # Shared WASM algorithm core — single source of truth shared with the browser.
 # using_shared_core() reports whether the backend is dispatching through it (wasm
 # loaded by wasmtime) or falling back to cv2. Surfaced to the UI as a badge.
-from text_eraser._shared_core import using_shared_core
+# python_core() forces the ORIGINAL pure Python core (cv2/numpy) for one request —
+# what the UI's「使用 Python 核心」switch sends as use_python_core=true.
+from text_eraser._shared_core import python_core, using_shared_core
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_DIR.parent
@@ -323,6 +325,9 @@ async def erase(
     fill_max_dist: int = Form(12),
     auto_edge: bool = Form(True),
     auto_max_edge: int = Form(2),
+    # 计算核心选择：true = 走「原本的 Python 核心」(cv2/numpy 全流程, 不碰 wasm);
+    # false(默认) = 走共享 WASM 算法核(与浏览器同一份 textcore.wasm)。
+    use_python_core: bool = Form(False),
 ):
     """擦除上传图片中的文字。返回 JSON:
         {
@@ -350,33 +355,38 @@ async def erase(
     if H * W == 0:
         raise HTTPException(400, "空图像")
 
+    # use_python_core=True → 整条后端流水线(算子/去发光 v2/PatchMatch 填充)全部回到
+    # 原本的 Python 实现; 否则维持共享 WASM 核。开关只作用于本次请求(ContextVar)。
+    erase_kwargs = dict(
+        edge=edge,
+        q_off=q_off,
+        max_area_ratio=max_area_ratio,
+        max_box_ratio=max_box_ratio,
+        direction=direction,
+        edge_aware=edge_aware,
+        glow_mode=glow_mode,
+        deglow_strength=deglow_strength,
+        deglow_green_thr=deglow_green_thr,
+        deglow_range=deglow_range,
+        deglow_glo=deglow_glo,
+        deglow_protect=deglow_protect,
+        deglow_mask_soft=deglow_mask_soft,
+        deglow_zone_ratio=deglow_zone_ratio,
+        deglow_zone_expand=deglow_zone_expand,
+        deglow_protect_px=deglow_protect_px,
+        deglow_chroma_keep=deglow_chroma_keep,
+        deglow_scheme=deglow_scheme,
+        fill_white=fill_white,
+        fill_max_dist=fill_max_dist,
+        auto_edge=auto_edge,
+        auto_max_edge=auto_max_edge,
+        return_mask=True,
+    )
     try:
-        result, mask, meta = erase_text(
-            rgb,
-            edge=edge,
-            q_off=q_off,
-            max_area_ratio=max_area_ratio,
-            max_box_ratio=max_box_ratio,
-            direction=direction,
-            edge_aware=edge_aware,
-            glow_mode=glow_mode,
-            deglow_strength=deglow_strength,
-            deglow_green_thr=deglow_green_thr,
-            deglow_range=deglow_range,
-            deglow_glo=deglow_glo,
-            deglow_protect=deglow_protect,
-            deglow_mask_soft=deglow_mask_soft,
-            deglow_zone_ratio=deglow_zone_ratio,
-            deglow_zone_expand=deglow_zone_expand,
-            deglow_protect_px=deglow_protect_px,
-            deglow_chroma_keep=deglow_chroma_keep,
-            deglow_scheme=deglow_scheme,
-            fill_white=fill_white,
-            fill_max_dist=fill_max_dist,
-            auto_edge=auto_edge,
-            auto_max_edge=auto_max_edge,
-            return_mask=True,
-        )
+        with python_core(use_python_core):
+            result, mask, meta = erase_text(rgb, **erase_kwargs)
+            # 在开关生效的作用域内快照实际引擎, 供前端徽标显示(离开 with 后即失效)
+            engine_wasm = bool(using_shared_core())
     except Exception as e:
         raise HTTPException(500, f"算法失败: {e}")
 
@@ -413,10 +423,17 @@ async def erase(
             "fill_max_dist": fill_max_dist,
             "auto_edge": auto_edge,
             "auto_max_edge": auto_max_edge,
+            "use_python_core": use_python_core,
         },
         # 当前是否经「共享算法核」(textcore.wasm) 计算 —— 后端与浏览器共用同一份算子，
         # 前端据此点亮「共享核」徽标，让用户直观看到两种模式都跑的是同一套算法。
-        "shared_core": bool(using_shared_core()),
+        # 勾选「使用 Python 核心」时为 false(本次请求走纯 Python 实现)。
+        "shared_core": engine_wasm,
+        # 实际使用的计算核心: "wasm" = 共享 WASM 核; "python" = 原本的 Python 核心。
+        # use_python_core=false 但 wasm 加载失败时也会是 "python"(自动回退)。
+        "engine": "wasm" if engine_wasm else "python",
+        # 用户是否显式要求 Python 核心(区分"主动选择"与"wasm 不可用被动回退")
+        "engine_requested": "python" if use_python_core else "wasm",
     }
 
     if return_overlay:

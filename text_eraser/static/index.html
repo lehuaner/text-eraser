@@ -19,6 +19,11 @@
     transition: background .2s, color .2s, border-color .2s;
   }
   .shared-badge.active { background: #4a3a12; color: #ffd98a; border-color: #8a6d2f; }
+  /* Python 核心模式：徽标用蓝色区分于 WASM 共享核的琥珀色 */
+  .shared-badge.python { background: #12324a; color: #8ad0ff; border-color: #2f6d8a; }
+  /* 互斥禁用：开启 Python 核心后「本地浏览器计算」置灰不可点 */
+  .compute-toggle.is-disabled { opacity: .45; cursor: not-allowed; }
+  .compute-toggle.is-disabled input { cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -78,7 +83,11 @@
       <button class="example-btn" id="exampleBtn">🎯 使用示例图</button>
       <button class="hist-btn" id="histBtn">📜 历史</button>
 
-      <label class="checkbox-inline compute-toggle">
+      <label class="checkbox-inline compute-toggle" id="pythonCoreLabel">
+        <input type="checkbox" id="pythonCore">
+        使用 Python 核心<small>(后端走原本的 cv2/numpy 算法, 不使用 WASM 共享核; 开启后「本地浏览器计算」不可用)</small>
+      </label>
+      <label class="checkbox-inline compute-toggle" id="browserComputeLabel">
         <input type="checkbox" id="browserCompute">
         本地浏览器计算<small>(纯前端运行, 不依赖后端算法; 需联网加载 opencv.js / onnxruntime)</small>
       </label>

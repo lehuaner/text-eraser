@@ -38,8 +38,29 @@
   const fillMaxDistEl = $("fillMaxDist");
 
   const browserComputeEl = $("browserCompute");
+  const browserComputeLabelEl = $("browserComputeLabel");
+  const pythonCoreEl = $("pythonCore");
+  const pythonCoreLabelEl = $("pythonCoreLabel");
   const computeBadgeEl = $("computeBadge");
   const sharedCoreBadgeEl = $("sharedCoreBadge");
+
+  /* 计算核心互斥：
+     - 勾选「使用 Python 核心」→ 强制后端计算(取消并禁用「本地浏览器计算」)，
+       因为 Python 核心只存在于后端(浏览器端没有 cv2/numpy)；
+     - 取消「使用 Python 核心」→ 恢复「本地浏览器计算」可选。 */
+  function syncCoreExclusion() {
+    if (!pythonCoreEl || !browserComputeEl) return;
+    const py = pythonCoreEl.checked;
+    if (py && browserComputeEl.checked) browserComputeEl.checked = false;
+    browserComputeEl.disabled = py;
+    if (browserComputeLabelEl) browserComputeLabelEl.classList.toggle("is-disabled", py);
+    if (browserComputeLabelEl) {
+      browserComputeLabelEl.title = py
+        ? "已启用 Python 核心（仅后端可用），如需浏览器端计算请先关闭 Python 核心"
+        : "";
+    }
+    setComputeBadge(browserComputeEl.checked);
+  }
 
   let currentFile = null;
   let resultB64 = null;
@@ -242,6 +263,9 @@
     form.append("fill_white", fillWhiteEl.checked ? "true" : "false");
     form.append("fill_max_dist", String(parseInt(fillMaxDistEl.value, 10) || 0));
     form.append("return_overlay", "true");
+    // 计算核心：勾选则后端全程走原本的 Python(cv2/numpy)实现, 不使用 WASM 共享核
+    form.append("use_python_core",
+                pythonCoreEl && pythonCoreEl.checked ? "true" : "false");
     return form;
   }
 
@@ -255,7 +279,9 @@
   }
 
   async function submitErase(file, nameHint) {
-    if (browserComputeEl && browserComputeEl.checked) {
+    // Python 核心只存在于后端 → 勾选时忽略浏览器端分支(UI 已禁用, 这里再兜一层)
+    const wantPython = !!(pythonCoreEl && pythonCoreEl.checked);
+    if (!wantPython && browserComputeEl && browserComputeEl.checked) {
       return await submitEraseBrowser(file, nameHint);
     }
     const t0 = performance.now();
@@ -266,7 +292,12 @@
     const d = j.data;
     d.compute_source = "后端";
     setComputeBadge(false);
-    setSharedCoreBadge(!!d.shared_core);
+    setSharedCoreBadge(!!d.shared_core, d.engine);
+    // 用户要 Python 核心却收到 wasm(或反之) → 明确提示, 避免"以为切了其实没切"
+    if (d.engine_requested && d.engine && d.engine_requested !== d.engine) {
+      setStatus(`注意：请求 ${d.engine_requested} 核心，实际使用 ${d.engine} 核心`,
+                "error");
+    }
     displayErase(d, nameHint, elapsedMs);
     return d;
   }
@@ -278,12 +309,20 @@
     computeBadgeEl.classList.toggle("local", !!local);
   }
 
-  /* 共享算法核徽标：后端或浏览器两种模式下，只要当前跑的是同一份 textcore.wasm
-     共享核(而非纯 cv2 fallback)就点亮；让用户直观确认"前后端共用一套算法"。 */
-  function setSharedCoreBadge(on) {
+  /* 算法核徽标，三态：
+       共享核 ✓    —— 跑的是 textcore.wasm 共享核(前后端同一份字节)
+       Python 核心 —— 后端跑原本的 cv2/numpy 实现(勾选了「使用 Python 核心」)
+       共享核 ✕    —— 未知/未运行, 或 wasm 不可用且非主动选择 Python */
+  function setSharedCoreBadge(on, engine) {
     if (!sharedCoreBadgeEl) return;
-    sharedCoreBadgeEl.textContent = on ? "共享核 ✓" : "共享核 ✕";
+    const isPython = engine === "python";
+    sharedCoreBadgeEl.textContent = on ? "共享核 ✓" : (isPython ? "Python 核心" : "共享核 ✕");
+    sharedCoreBadgeEl.title = on
+      ? "前后端共用同一套 WASM 算法核 (textcore.wasm)"
+      : (isPython ? "后端使用原本的 Python 核心 (cv2/numpy)，未经 WASM 共享核"
+                  : "前后端共用同一套 WASM 算法核 (textcore.wasm)");
     sharedCoreBadgeEl.classList.toggle("active", !!on);
+    sharedCoreBadgeEl.classList.toggle("python", !on && isPython);
   }
 
   function collectComputeParams() {
@@ -652,6 +691,11 @@
   // 本地浏览器计算开关：即时切换计算位置徽标
   if (browserComputeEl) {
     browserComputeEl.addEventListener("change", () => {
+      // Python 核心开启时该开关被禁用；兜底防止程序化改动绕过互斥
+      if (pythonCoreEl && pythonCoreEl.checked) {
+        browserComputeEl.checked = false;
+        return;
+      }
       setComputeBadge(browserComputeEl.checked);
       setStatus(
         browserComputeEl.checked
@@ -661,4 +705,19 @@
       );
     });
   }
+
+  // Python 核心开关：与「本地浏览器计算」互斥，且强制回到后端计算
+  if (pythonCoreEl) {
+    pythonCoreEl.addEventListener("change", () => {
+      syncCoreExclusion();
+      setStatus(
+        pythonCoreEl.checked
+          ? "已切换至「Python 核心」（后端 cv2/numpy 全流程，不使用 WASM 共享核；已禁用本地浏览器计算）"
+          : "已切换回 WASM 共享核（后端与浏览器共用同一份 textcore.wasm）",
+        ""
+      );
+      setSharedCoreBadge(false, pythonCoreEl.checked ? "python" : undefined);
+    });
+  }
+  syncCoreExclusion();   // 初始同步（含刷新后浏览器记忆的勾选状态）
 })();

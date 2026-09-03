@@ -9,11 +9,23 @@ Every helper tries the wasm core first and transparently falls back to a cv2/num
 implementation on any failure (missing .wasm, wasmtime not installed, operator error),
 so existing behavior is preserved if the core cannot be loaded.
 
-Toggle: set environment `TEXTCORE_BACKEND=0` to disable wasm and force the cv2 fallback
-for the whole backend. By default wasm is used when available.
+Toggle (process-wide): set environment `TEXTCORE_BACKEND=0` to disable wasm and force the
+cv2 fallback for the whole backend. By default wasm is used when available.
+
+Toggle (per request): wrap a call in :func:`python_core` to force the *original* pure
+Python core (cv2/numpy) for that request only, leaving other requests on wasm::
+
+    with python_core(True):
+        erase_text(...)          # runs the legacy cv2/numpy pipeline end-to-end
+
+This is what the web UI's「使用 Python 核心」switch drives: because *every* shared
+operator in this module funnels through :func:`_get_core`, gating that single function
+switches the entire backend pipeline (operators, de-glow v2, PatchMatch fill) back to the
+pure Python implementation — no other module needs to know about the switch.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import numpy as np
 
@@ -28,10 +40,53 @@ _USE_WASM = os.environ.get("TEXTCORE_BACKEND", "1") != "0"
 _core = None
 _core_ok = None
 
+# Per-request override: when True, _get_core() reports "no core" so every helper in this
+# module takes its cv2/numpy branch — i.e. the original pure Python core. A ContextVar
+# (not a plain global) keeps the choice scoped to the current request/task, so concurrent
+# requests can independently pick Python or wasm.
+_force_python: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "textcore_force_python", default=False)
+
+
+class python_core:
+    """Context manager forcing the pure Python (cv2/numpy) core inside its block.
+
+    ``with python_core(True): ...`` runs the legacy Python pipeline; ``python_core(False)``
+    is a no-op passthrough so callers can write ``with python_core(flag):`` unconditionally.
+    """
+
+    __slots__ = ("_enabled", "_token")
+
+    def __init__(self, enabled: bool = True):
+        self._enabled = bool(enabled)
+        self._token = None
+
+    def __enter__(self):
+        self._token = _force_python.set(self._enabled)
+        return self
+
+    def __exit__(self, *_exc):
+        if self._token is not None:
+            _force_python.reset(self._token)
+            self._token = None
+        return False
+
+
+def forcing_python_core() -> bool:
+    """True if the current context has the pure Python core forced on."""
+    return bool(_force_python.get())
+
 
 def _get_core():
-    """Return the loaded wasm core, or None if wasm is disabled / failed to load."""
+    """Return the loaded wasm core, or None if wasm is disabled / failed to load.
+
+    Returns None whenever the caller asked for the pure Python core (see
+    :class:`python_core`) — checked before the cache so the wasm module stays loaded
+    and later wasm requests are unaffected.
+    """
     global _core, _core_ok
+    if _force_python.get():
+        return None
     if _core_ok is not None:
         return _core if _core_ok else None
     if not _USE_WASM:
@@ -48,7 +103,12 @@ def _get_core():
 
 
 def using_shared_core() -> bool:
-    """True if the backend is currently dispatching through the wasm core."""
+    """True if the backend is currently dispatching through the wasm core.
+
+    False when wasm is unavailable/disabled **or** when the pure Python core was
+    requested for this context (:class:`python_core`). Algorithm modules use this to
+    decide between shared-core and legacy branches (e.g. patch_fill's TELEA path).
+    """
     return _get_core() is not None
 
 
