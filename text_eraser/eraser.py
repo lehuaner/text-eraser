@@ -708,8 +708,13 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         return (clean0, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
             else (clean0, meta)
 
-    # 4) 共享核: 一步跑完「mask 修复(zone 亮核吸收 + 残余绿/暗源剔除) + PatchMatch
-    #    填充」—— 与浏览器 Worker 调用同一份 wasm, 结果逐字节一致。失败则回退 cv2。
+    # 4) 共享核: 只负责「去发光 + mask 修复(zone 亮核吸收 + 残余绿/暗源剔除)」,
+    #    返回 clean / fill(膨胀+edge_aware 长大后的最终蒙版, 不含 soft_expand 软带) /
+    #    zone。填充交回 host 侧 _run_fill 统一调度, 传 edge=0/edge_aware=False 表示
+    #    蒙版已由共享核定型、不再二次膨胀: 平滑区(tex<flat_tex)走 cv2 TELEA——
+    #    与 Python 核心/浏览器 opencv.js 一致; 纹理区走共享核 PatchMatch——与浏览器
+    #    patchmatchInpaintShared 同字节。soft_expand 软带混合也在 host 侧重做,
+    #    与 cv2 回退路径共用同一段代码。失败则回退下方 cv2 路径。
     if core is not None:
         res = _shared_core.erase_text_glyphs(
             rgb, tmask, tm_clean, strength=deglow_strength,
@@ -719,13 +724,28 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
             seed=0, edge_aware=1 if edge_aware else 0,
             soft_expand=soft_expand)
         if res is not None:
-            result, fill, clean, zone = res
-            mask_filled = fill
-            meta = {"mask_pix": int((mask > 0).sum()),
-                    "mask_filled_pix": int((mask_filled > 0).sum()),
-                    "inpaint_seconds": time.time() - t0,
-                    "method": "ml-shared-core", "boxes": boxes,
-                    "deglow_img": clean, "glow_zone": zone}
+            _result_c, fill, clean0, zone0 = res
+            if not fill.any():
+                meta = {"mask_pix": int((mask > 0).sum()), "mask_filled_pix": 0,
+                        "inpaint_seconds": time.time() - t0,
+                        "method": "ml-shared-core", "boxes": [],
+                        "deglow_img": clean0, "glow_zone": zone0}
+                return (clean0, fill, meta) if return_mask else (clean0, meta)
+            # 与 cv2 回退路径一致的取样剔除(防把残余绿/暗源复制进洞)
+            sample_exclude = _residual_green(clean0, fill)
+            if zone0 is not None and bool((zone0 > 0).any()):
+                _dx = _dark_source_exclude(clean0, fill)
+                if _dx is not None:
+                    sample_exclude = (_dx | sample_exclude) if sample_exclude is not None \
+                        else _dx
+            rf = _run_fill(clean0, fill, boxes, edge=0, direction=direction,
+                           edge_aware=False, return_mask=True, t0=t0,
+                           sample_exclude=sample_exclude, soft_expand=soft_expand)
+            result, mask_filled, meta = rf
+            meta["method"] = "ml-shared-core"
+            meta["mask_pix"] = int((mask > 0).sum())
+            meta["deglow_img"] = clean0
+            meta["glow_zone"] = zone0
             return (result, mask_filled, meta) if return_mask else (result, meta)
 
     # --- cv2 回退路径(共享核不可用或调用失败) ---

@@ -144,10 +144,13 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         # 仍保留 n>=2 边带检查(避免极小 mask 边带不足时误触发); span 检查
         # 移除——对真正光滑背景(span≈0)同样适用。纹理背景(tex>=flat_tex)
         # 仍走 patchmatch, 不损失纹理。
-        # 1:1 对齐(共享 wasm 方案): 装了 shared core 时, 平滑背景也走 wasm PatchMatch
-        # (与后端/前端同字节), 不再走 cv2 TELEA—— 否则三端填充结果不一致。
-        # 仅无 core 的纯 cv2 回退路径保留 TELEA 平滑渐变保真。
-        if tex < flat_tex and not using_shared_core():
+        # 平滑背景(环带纹理低 tex<flat_tex)一律用 cv2 TELEA 扩散填充——这与浏览器
+        # (patchmatch.js 走 opencv.js INPAINT_TELEA) 和 Python 核心(无 core 回退) 行为
+        # 一致, 是「三端一致」的 host 侧判定。Rust 共享核只负责非平滑纹理区的 PatchMatch
+        # 填充(下方 using_shared_core 分支 / 浏览器的 patchmatchInpaintShared)。此前此处
+        # 对 wasm 模式误跳过 TELEA、改走 Rust PatchMatch, 导致后端 wasm 与 Python 核心/
+        # 浏览器在平滑区填充内容不一致。
+        if tex < flat_tex:
             out = cv2.inpaint(np.clip(img, 0, 255).astype(np.uint8),
                               m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
             return out
