@@ -46,6 +46,27 @@ _DIST_DIR = _BROWSER_DIR / "dist"
 # min_bytes). A source may be an ``https://``/``http://`` URL or a ``file://`` path
 # (used for local fallbacks such as an already-``npm install``-ed node_modules).
 # Candidates are tried in order; first success wins.
+_ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/"
+_ORT_LOCAL = _BROWSER_DIR / "node_modules" / "onnxruntime-web" / "dist"
+
+# onnxruntime-web's UMD `ort.min.js` dynamically `import()`s its backend glue modules
+# at load time (e.g. ort-wasm-simd-threaded.mjs / .jsep.mjs), regardless of which
+# execution provider you pick — and the threaded wasm backend needs its `.wasm` too.
+# So we must ship the WHOLE `ort-wasm-simd-threaded.*` family into browser/vendor/ort/,
+# not just the binary. `wasmPaths` (set in eraser.worker.js) points here so every
+# dynamically-imported file resolves.
+_ORT_THREADED = [
+    "ort.min.js",
+    "ort-wasm-simd-threaded.mjs",
+    "ort-wasm-simd-threaded.wasm",
+    "ort-wasm-simd-threaded.jsep.mjs",
+    "ort-wasm-simd-threaded.jsep.wasm",
+    "ort-wasm-simd-threaded.asyncify.mjs",
+    "ort-wasm-simd-threaded.asyncify.wasm",
+    "ort-wasm-simd-threaded.jspi.mjs",
+    "ort-wasm-simd-threaded.jspi.wasm",
+]
+
 _ASSETS = [
     (
         "browser/vendor/opencv.js",
@@ -55,24 +76,21 @@ _ASSETS = [
         ],
         1_000_000,
     ),
-    (
-        "browser/vendor/ort/ort.min.js",
-        [
-            "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort.min.js",
-            "file://" + str(_BROWSER_DIR / "node_modules" / "onnxruntime-web" / "dist" / "ort.min.js"),
-        ],
-        100_000,
-    ),
-    (
-        "browser/vendor/ort/ort-wasm-simd-threaded.wasm",
-        [
-            "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/ort-wasm-simd-threaded.wasm",
-            "file://"
-            + str(_BROWSER_DIR / "node_modules" / "onnxruntime-web" / "dist" / "ort-wasm-simd-threaded.wasm"),
-        ],
-        1_000_000,
-    ),
 ]
+for _f in _ORT_THREADED:
+    _is_wasm = _f.endswith(".wasm")
+    # Prefer a local node_modules copy (instant, offline) when present; fall back to
+    # the CDN for a clean checkout / third-party install without browser/node_modules.
+    _ASSETS.append(
+        (
+            "browser/vendor/ort/" + _f,
+            [
+                "file://" + str(_ORT_LOCAL / _f),
+                str(_ORT_BASE) + _f,
+            ],
+            1_000_000 if _is_wasm else 10_000,
+        )
+    )
 
 # Download timeout per single source attempt (seconds). Short enough that an offline
 # box doesn't stall server boot for minutes; the startup hook runs best-effort anyway.
@@ -214,29 +232,28 @@ def ensure_browser_assets(force: bool = False) -> dict[str, str]:
     return results
 
 
+def _required_assets():
+    """All assets that must be present for the browser-compute feature to work."""
+    req = [
+        ("opencv.js", _VENDOR_DIR / "opencv.js", 1_000_000),
+        ("ch_PP-OCRv4_det.onnx", _VENDOR_DIR / "ch_PP-OCRv4_det.onnx", 1_000_000),
+        ("te-bundle.js", _DIST_DIR / "te-bundle.js", 10_000),
+    ]
+    for _f in _ORT_THREADED:
+        _mb = 1_000_000 if _f.endswith(".wasm") else 10_000
+        req.append((_f, _ORT_DIR / _f, _mb))
+    return req
+
+
 def browser_assets_ready() -> bool:
     """Quick check: are all required assets present on disk right now?"""
-    checks = [
-        (_VENDOR_DIR / "opencv.js", 1_000_000),
-        (_ORT_DIR / "ort.min.js", 100_000),
-        (_ORT_DIR / "ort-wasm-simd-threaded.wasm", 1_000_000),
-        (_VENDOR_DIR / "ch_PP-OCRv4_det.onnx", 1_000_000),
-        (_DIST_DIR / "te-bundle.js", 10_000),
-    ]
-    return all(p.is_file() and p.stat().st_size >= mb for p, mb in checks)
+    return all(p.is_file() and p.stat().st_size >= mb for _, p, mb in _required_assets())
 
 
 def browser_assets_status() -> dict:
     """Detailed per-asset status for /api/browser-assets (UI/health)."""
-    items = [
-        ("opencv.js", _VENDOR_DIR / "opencv.js", 1_000_000),
-        ("ort.min.js", _ORT_DIR / "ort.min.js", 100_000),
-        ("ort-wasm-simd-threaded.wasm", _ORT_DIR / "ort-wasm-simd-threaded.wasm", 1_000_000),
-        ("ch_PP-OCRv4_det.onnx", _VENDOR_DIR / "ch_PP-OCRv4_det.onnx", 1_000_000),
-        ("te-bundle.js", _DIST_DIR / "te-bundle.js", 10_000),
-    ]
     out = {}
-    for name, p, mb in items:
+    for name, p, mb in _required_assets():
         out[name] = {
             "present": p.is_file() and p.stat().st_size >= mb,
             "path": str(p),
