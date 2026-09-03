@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+
+# 打包产物
+dist/
+build/
+*.egg-info/
+.venv/
+
+# 运行/测试产物
+data/
+*.bin
+
+# 共享算法核 wasm 产物：由 shared/ (Rust) 编译，前端与后端共用同一份，
+# 是「前后端共用一套算法」的唯一真相源，需随仓库分发（不可忽略）。
+# 仅放行这一个文件；shared/build/ 内的其它内容仍按 build/ 规则忽略。
+!shared/build/
+!shared/build/textcore.wasm
+
+# 下载的模型文件（自动下载，勿入库）
+text_eraser/models/det/*.onnx
+
+# 浏览器端本地化依赖（opencv.js / onnxruntime-web / DBNet 模型，由 vendoring 步骤生成）
+browser/vendor/
+# 浏览器端 ESM 管线打包产物（由 `node browser/build.mjs` 生成，非源码）
+browser/dist/
+
+# 工具记忆
+.workbuddy/

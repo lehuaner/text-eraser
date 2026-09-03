@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install
+        # cv2 由使用方环境提供 (0.2.0 起不进依赖): CI 无头环境选 opencv-python-headless
+        run: |
+          pip install "opencv-python-headless>=4.8"
+          pip install -e ".[dev,web,ml]"
+      - name: Test
+        run: pytest -q

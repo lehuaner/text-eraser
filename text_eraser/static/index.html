@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TextEraser — 文字擦除</title>
+<link rel="stylesheet" href="/static/style.css?v=6">
+<style>
+  .compute-toggle { margin-left: 12px; }
+  .compute-toggle small { color: #8a93a6; font-weight: 400; }
+  .compute-badge {
+    margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; background: #2b3344; color: #c7d0e0; border: 1px solid #3a4456;
+  }
+  .compute-badge.local { background: #1f5132; color: #b6f5cf; border-color: #2f7d4f; }
+  .shared-badge {
+    margin-left: 8px; padding: 4px 10px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; background: #2b3344; color: #8a93a6; border: 1px solid #3a4456;
+    transition: background .2s, color .2s, border-color .2s;
+  }
+  .shared-badge.active { background: #4a3a12; color: #ffd98a; border-color: #8a6d2f; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="logo">✦</span>
+    <span class="title">TextEraser</span>
+    <span class="subtitle">基于 PatchMatch 的文字擦除（参考区 = 整图 − 文字）</span>
+  </div>
+</header>
+
+<main>
+  <section class="preview">
+    <div class="panel">
+      <h3>原图</h3>
+      <div class="imgbox" id="boxOrig"><span class="hint">上传图片或点击下方"使用示例图"</span></div>
+    </div>
+    <div class="panel" id="panelGlow" hidden>
+      <h3>发光蒙版 <small>(红色=检测到的发光区)</small></h3>
+      <div class="imgbox" id="boxGlow"><span class="hint">开启去发光后显示</span></div>
+    </div>
+    <div class="panel" id="panelDeglow" hidden>
+      <h3>去发光结果 <small>(去除发光后的全图)</small></h3>
+      <div class="imgbox" id="boxDeglow"><span class="hint">开启去发光后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>文字蒙版 <small>(红 · 移动边缘前 · 即检测出的字形蒙版)</small></h3>
+      <div class="imgbox" id="boxMaskPre"><span class="hint">蒙版会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>移动边缘后蒙版 <small>(红 · 实际填充区 = 文字蒙版外扩 edge px)</small></h3>
+      <div class="imgbox" id="boxMask"><span class="hint">蒙版会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>文字图层 <small>(透明底 · 从原图提取出的字)</small></h3>
+      <div class="imgbox" id="boxText"><span class="hint">文字图层会在擦除完成后显示</span></div>
+    </div>
+    <div class="panel">
+      <h3>擦除结果</h3>
+      <div class="imgbox" id="boxResult"><span class="hint">结果会在擦除完成后显示</span></div>
+    </div>
+  </section>
+
+  <div class="batch-pager" id="batchPager" hidden>
+    <button id="batchPrev" class="pager-btn">◀ 上一张</button>
+    <span id="batchCounter" class="pager-counter">0/0</span>
+    <span id="batchName" class="pager-name"></span>
+    <button id="batchNext" class="pager-btn">下一张 ▶</button>
+  </div>
+
+  <section class="controls">
+    <div class="ctrl-row">
+      <label class="file-btn">
+        <input type="file" id="fileInput" accept="image/*" hidden>
+        <span>📁 选择图片</span>
+      </label>
+      <button class="example-btn" id="exampleBtn">🎯 使用示例图</button>
+      <button class="hist-btn" id="histBtn">📜 历史</button>
+
+      <label class="checkbox-inline compute-toggle">
+        <input type="checkbox" id="browserCompute">
+        本地浏览器计算<small>(纯前端运行, 不依赖后端算法; 需联网加载 opencv.js / onnxruntime)</small>
+      </label>
+      <span class="compute-badge" id="computeBadge" title="当前计算位置">后端计算</span>
+      <span class="shared-badge" id="sharedCoreBadge" title="前后端共用同一套 WASM 算法核 (textcore.wasm)">共享核 ✕</span>
+
+      <details class="advanced" open>
+        <summary>高级参数（默认值即可复现）</summary>
+        <div class="adv-grid">
+          <label>移动边缘<small>(≈PS 选区扩展/收缩, 正=扩, 负=缩, 0=只取Otsu字形, 1=默认)</small>
+            <input type="number" id="edge" min="-5" max="20" step="1" value="1">
+          </label>
+          <label class="chk">
+            <input type="checkbox" id="autoEdge" checked> 自动移动边缘
+            <small>(按需+1, 最多到「自动最大」；纹理损伤最小)</small>
+          </label>
+          <label>自动最大移动边缘<small>(上限, 默认2)</small>
+            <input type="number" id="autoMaxEdge" min="1" max="4" step="1" value="2">
+          </label>
+          <label>q_off<small>(蒙版紧密度 30~70, 55=兼顾深浅字)</small>
+            <input type="number" id="qOff" min="30" max="70" step="1" value="55">
+          </label>
+          <label>max_area_ratio<small>(单块面积上限, 0.40=放行汉字粘连块)</small>
+            <input type="number" id="maxAreaRatio" min="0.05" max="1.0" step="0.05" value="0.40">
+          </label>
+          <label>max_box_ratio<small>(文字框/原图面积, 小图大字调到 0.6+)</small>
+            <input type="number" id="maxBoxRatio" min="0.1" max="1.0" step="0.05" value="0.40">
+          </label>
+          <label>纹理方向<small>(°, 空=关闭; 沿此方向取纹理)</small>
+            <input type="number" id="direction" min="-180" max="180" step="1" placeholder="如 60">
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="edgeAware">
+            边缘感知(实验性, 默认关)
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="fillWhite" checked>
+            亮白补全(默认开；关闭→回到纯净 Otsu，小张图非文字浅色区不再被锁)
+          </label>
+          <label>白段最大距离<small>(亮白补全时吞并远处纯白像素的距离上限,px；0=只走连通+AA尾部；典型白边/AA<8px,默认 12 够用;调到 32 会误吞远处光斑/亮背景)</small>
+            <input type="number" id="fillMaxDist" min="0" max="64" step="1" value="12">
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="deglowEnabled" checked>
+            开启去发光<small>(v2 减绿度去发光 → 去字; 关=普通去字)</small>
+          </label>
+          <label>去发光强度<small>(0=不去色, 1=完全去除)</small>
+            <input type="number" id="deglowStrength" min="0" max="1" step="0.05" value="1">
+          </label>
+          <label>文字保护圈<small>(px, 文字笔画外扩, 圈内只去绿铸不做羽化; 0=紧贴笔画, 默认1)</small>
+            <input type="number" id="deglowProtectPx" min="0" max="8" step="1" value="1">
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="deglowChromaKeep" checked>
+            色度结构保留<small>(保留分隔线/描边等非绿弱色结构, 不被重建抹掉; 默认开)</small>
+          </label>
+          <label>去发光范围外扩<small>(px, 把极淡光晕外缘也纳入去绿, 默认10, 调大覆盖更远残绿)</small>
+            <input type="number" id="deglowZoneExpand" min="0" max="60" step="1" value="10">
+          </label>
+          <label>蒙版透明度扩展<small>(px, 0=关; 外围半透明填充带, 扩覆盖不毁纹理)</small>
+            <input type="number" id="deglowMaskSoft" min="0" max="150" step="1" value="0">
+          </label>
+        </div>
+        <p class="adv-note">可见效果靠「移动边缘」和 q_off；max_*_ratio 只在「检出失败/误杀」时调高。纹理方向用于有主导纹理(岩石条带/木纹)时让填充沿该方向延展。</p>
+      </details>
+
+      <button class="download-btn" id="downloadBtn" hidden>💾 结果 PNG</button>
+      <button class="download-btn small" id="downloadTextBtn" hidden>✂️ 文字图层</button>
+      <button class="download-btn small" id="downloadMaskBtn" hidden>🔴 蒙版透明</button>
+    </div>
+    <div class="status" id="status">就绪</div>
+  </section>
+
+  <aside class="hist-panel sidebar" id="histPanel">
+    <div class="hist-head">
+      <span class="hist-title">历史记录</span>
+      <button id="histRunAll" class="run-btn small">▶ 依次处理</button>
+      <button id="histClose" class="ghost-btn small" title="收起侧边栏">✕</button>
+    </div>
+    <div class="hist-grid" id="histGrid"></div>
+    <div class="hist-note" id="histNote">点击「📜 历史」展开侧边栏</div>
+  </aside>
+</main>
+
+<div class="fab" id="fabErase">
+  <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
+</div>
+
+<script type="module" src="/static/browser-engine.mjs"></script>
+<script src="/static/app.js?v=6"></script>
+</body>
+</html>

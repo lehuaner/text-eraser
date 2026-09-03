@@ -1,0 +1,31 @@
+name: Publish to PyPI
+
+# 用法: 打 tag 并推送即自动发布 → git tag v0.2.0 && git push origin v0.2.0
+# 无需任何 API token —— 走 PyPI Trusted Publishing (OIDC)。
+# 首次使用前需在 PyPI 项目设置里登记一次本工作流 (见 README「发布」一节)。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC: PyPI Trusted Publishing 凭证, 不用 token
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
