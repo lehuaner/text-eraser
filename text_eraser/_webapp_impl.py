@@ -543,7 +543,6 @@ async def erase(
             "edge": edge, "q_off": q_off,
             "max_area_ratio": max_area_ratio, "max_box_ratio": max_box_ratio,
             "direction": direction, "edge_aware": edge_aware,
-            "glow_mode": glow_mode,
             "deglow_strength": deglow_strength, "deglow_green_thr": deglow_green_thr,
             "deglow_range": deglow_range, "deglow_glo": deglow_glo,
             "deglow_protect": deglow_protect,             "deglow_mask_soft": deglow_mask_soft,

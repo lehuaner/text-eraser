@@ -313,6 +313,7 @@ async function eraseTextGlyphs(rgbF32, h, w, tmaskU8, tmask2U8,
     new Float32Array(m, pIn, n * 3).set(rgbF32);
     new Uint8Array(m, pTm, n).set(tmaskU8);
     if (tmask2U8) new Uint8Array(m, pTm2, n).set(tmask2U8);
+    else new Uint8Array(m, pTm2, n).fill(0);  // alloc 不清零: 必须显式写零, 否则读到前次调用的残留
     ex.erase_text_glyphs(pIn, h, w, pTm, pTm2,
       strength == null ? 1.0 : strength,
       zoneRatio == null ? 0.6 : zoneRatio,
