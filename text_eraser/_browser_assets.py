@@ -105,6 +105,16 @@ def _resolve_node() -> str | None:
     return shutil.which("node")
 
 
+def npm_cmd() -> str:
+    """npm invocation matching the resolved node (npm.cmd on Windows PATH)."""
+    node = _resolve_node()
+    if node:
+        sibling = os.path.join(os.path.dirname(node), "npm.cmd")
+        if os.path.isfile(sibling):
+            return sibling
+    return "npm"
+
+
 def _download_one(url: str, dest: Path, timeout: int) -> None:
     """Download ``url`` to ``dest`` (via ``.part`` then atomic rename). Supports
     http(s) and ``file://`` (local copy). Raises on failure."""
@@ -179,7 +189,11 @@ def _ensure_model() -> str:
 
 
 def _ensure_bundle() -> str:
-    """Build browser/dist/te-bundle.js via `node browser/build.mjs` (esbuild)."""
+    """Build browser/dist/te-bundle.js via `node browser/build.mjs` (esbuild).
+
+    Self-healing: `browser/node_modules`（含 esbuild）与 `browser/dist` 都是易失
+    产物（gitignored），缺失时先 `npm install`（按 package-lock 安装）再构建。
+    """
     dest = _DIST_DIR / "te-bundle.js"
     if dest.is_file() and dest.stat().st_size >= 10_000:
         return "present"
@@ -187,8 +201,18 @@ def _ensure_bundle() -> str:
     if not node:
         return ("error: node not found — run `npm install` in browser/ then "
                 "`node browser/build.mjs` to build te-bundle.js")
-    # esbuild must be resolvable from browser/ (npm install esbuild there).
     try:
+        # self-heal: esbuild (and the rest of node_modules) may be missing
+        if not (_BROWSER_DIR / "node_modules" / "esbuild").exists():
+            logger.info("[browser-assets] node_modules missing, running npm install…")
+            subprocess.run(
+                [npm_cmd(), "install"],
+                cwd=str(_BROWSER_DIR),
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
         subprocess.run(
             [node, "browser/build.mjs"],
             cwd=str(_REPO_ROOT),
