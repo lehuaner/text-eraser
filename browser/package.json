@@ -1,0 +1,32 @@
+{
+  "name": "text-eraser-browser",
+  "version": "0.2.1",
+  "description": "Pure-browser (Web Worker + ES Module) port of PyPI text-eraser for content-aware text erasing.",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./worker": "./workers/eraser.worker.js"
+  },
+  "sideEffects": false,
+  "peerDependencies": {
+    "onnxruntime-web": "^1.27.0"
+  },
+  "peerDependenciesMeta": {
+    "onnxruntime-web": {
+      "optional": true
+    }
+  },
+  "keywords": [
+    "text-eraser",
+    "inpaint",
+    "patchmatch",
+    "opencv.js",
+    "browser",
+    "wasm"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "esbuild": "^0.21.5"
+  }
+}

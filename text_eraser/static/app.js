@@ -37,6 +37,10 @@
   const fillWhiteEl = $("fillWhite");
   const fillMaxDistEl = $("fillMaxDist");
 
+  const browserComputeEl = $("browserCompute");
+  const computeBadgeEl = $("computeBadge");
+  const sharedCoreBadgeEl = $("sharedCoreBadge");
+
   let currentFile = null;
   let resultB64 = null;
   let resultBlobUrl = null;
@@ -170,6 +174,7 @@
     downloadBtn.hidden = true;
     downloadTextBtn.hidden = true;
     downloadMaskBtn.hidden = true;
+    setSharedCoreBadge(false);
     if (resultBlobUrl) URL.revokeObjectURL(resultBlobUrl);
     resultBlobUrl = null;
     resultB64 = null;
@@ -250,14 +255,88 @@
   }
 
   async function submitErase(file, nameHint) {
+    if (browserComputeEl && browserComputeEl.checked) {
+      return await submitEraseBrowser(file, nameHint);
+    }
     const t0 = performance.now();
     const r = await fetch("/api/erase", { method: "POST", body: buildForm(file) });
     const j = await r.json();
     const elapsedMs = (performance.now() - t0).toFixed(0);
     if (!j.ok) throw new Error(j.msg || "后端失败");
     const d = j.data;
+    d.compute_source = "后端";
+    setComputeBadge(false);
+    setSharedCoreBadge(!!d.shared_core);
     displayErase(d, nameHint, elapsedMs);
     return d;
+  }
+
+  /* ---- 本地浏览器计算分支：复用 browser/ ESM port，全部算法在浏览器端执行 ---- */
+  function setComputeBadge(local) {
+    if (!computeBadgeEl) return;
+    computeBadgeEl.textContent = local ? "浏览器计算" : "后端计算";
+    computeBadgeEl.classList.toggle("local", !!local);
+  }
+
+  /* 共享算法核徽标：后端或浏览器两种模式下，只要当前跑的是同一份 textcore.wasm
+     共享核(而非纯 cv2 fallback)就点亮；让用户直观确认"前后端共用一套算法"。 */
+  function setSharedCoreBadge(on) {
+    if (!sharedCoreBadgeEl) return;
+    sharedCoreBadgeEl.textContent = on ? "共享核 ✓" : "共享核 ✕";
+    sharedCoreBadgeEl.classList.toggle("active", !!on);
+  }
+
+  function collectComputeParams() {
+    return {
+      edge: parseInt(edgeEl.value, 10) || 1,
+      direction: (directionEl.value || "").trim() ? parseFloat(directionEl.value) : null,
+      deglow: deglowEnabledEl.checked,
+      deglowStrength: parseFloat(deglowStrengthEl.value) || 1.0,
+      deglowChromaKeep: deglowChromaKeepEl.checked,
+    };
+  }
+
+  async function fileToImageData(file) {
+    const bmp = await createImageBitmap(file);
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    const ctx = c.getContext("2d");
+    ctx.drawImage(bmp, 0, 0);
+    const id = ctx.getImageData(0, 0, bmp.width, bmp.height);
+    bmp.close();
+    return id;
+  }
+
+  const _engineStageText = {
+    opencv: "初始化浏览器引擎：加载 opencv.js（wasm）…",
+    ort: "初始化浏览器引擎：加载 onnxruntime-web（wasm 线程）…",
+    dbnet: "初始化浏览器引擎：加载文字检测模型（DBNet）…",
+    erase: "浏览器计算中（大图会短暂卡顿）…",
+  };
+
+  async function submitEraseBrowser(file, nameHint) {
+    if (!window.TextEraserBrowser) {
+      throw new Error("浏览器引擎未加载（可能离线，或模块脚本被拦截）");
+    }
+    setStatus("初始化浏览器引擎（opencv.js + 文字检测模型）…", "working");
+    setComputeBadge(true);
+    await window.TextEraserBrowser.initEngine({
+      dbnet: true,
+      onProgress: (p) => {
+        if (p && p.stage && _engineStageText[p.stage]) setStatus(_engineStageText[p.stage], "working");
+      },
+    });
+    const img = await fileToImageData(file);
+    const params = collectComputeParams();
+    setStatus("浏览器计算中（大图会短暂卡顿）…", "working");
+    const t0 = performance.now();
+    const data = await window.TextEraserBrowser.eraseWith(img, params);
+    const elapsedMs = (performance.now() - t0).toFixed(0);
+    data.orig_size = [img.width, img.height];
+    data.orig_name = file.name || "image";
+    setSharedCoreBadge(!!data.shared_core);
+    displayErase(data, nameHint, elapsedMs);
+    return data;
   }
 
   /* 把后端擦除结果渲染到分步预览面板 + 下载按钮
@@ -316,7 +395,7 @@
       : ` • 去发光[强度${cfg.deglow_strength} 保护圈${cfg.deglow_protect_px}px 外扩${cfg.deglow_zone_expand} 软扩${cfg.deglow_mask_soft}${cfg.deglow_chroma_keep ? " 保色度" : ""}]`;
     const autoTxt = d.auto_edge ? ` • 自动移动边缘→${d.edge_used}` : "";
     setStatus(
-      `完成 — 用时 ${elapsedMs} ms（后端 ${d.elapsed}s） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${glowTxt}${autoTxt}`,
+      `完成 — 用时 ${elapsedMs} ms（${d.compute_source || "后端"}） • mask ${d.mask_pix}px • 检测到 ${boxes.length} 个文字框${glowTxt}${autoTxt}`,
       "success"
     );
   }
@@ -569,4 +648,51 @@
   }
 
   resetPreview();
+
+  // 本地浏览器计算开关：即时切换计算位置徽标
+  if (browserComputeEl) {
+    browserComputeEl.addEventListener("change", () => {
+      setComputeBadge(browserComputeEl.checked);
+      setStatus(
+        browserComputeEl.checked
+          ? "已切换至「本地浏览器计算」（首次运行会下载 opencv.js 与文字检测模型）"
+          : "已切换至后端计算",
+        ""
+      );
+    });
+  }
+
+  // 浏览器计算依赖 opencv.js / onnxruntime-web / DBNet 模型 / 打包管线，
+  // 这些大资源在服务端启动时按需自动下载（见 text_eraser._browser_assets）。
+  // 页面加载即查询就绪状态：未就位则禁用开关并提示原因，避免用户点到 15s 超时。
+  // 资源可能仍在后台下载，每 5s 重试一次。
+  function syncBrowserComputeAvailability() {
+    if (!browserComputeEl) return;
+    fetch("/api/browser-assets")
+      .then((r) => r.json())
+      .then((st) => {
+        if (st.ready) {
+          browserComputeEl.disabled = false;
+          browserComputeEl.title = "在浏览器端运行文字擦除（不依赖后端）";
+          return;
+        }
+        const miss = Object.keys(st)
+          .filter((k) => k !== "ready" && st[k] && st[k].present === false)
+          .join(", ");
+        browserComputeEl.disabled = true;
+        browserComputeEl.title =
+          "浏览器计算资源缺失（" + (miss || "未知") +
+          "）；可改用后端计算，或检查网络后刷新页面";
+        setStatus(
+          "本地浏览器计算资源未就绪（" + (miss || "未知") +
+          "），已临时禁用；可改用后端计算，或稍后刷新",
+          "warn"
+        );
+        setTimeout(syncBrowserComputeAvailability, 5000);
+      })
+      .catch(() => {
+        /* 端点不可达（旧版服务端）：不强制禁用，保持原行为 */
+      });
+  }
+  syncBrowserComputeAvailability();
 })();

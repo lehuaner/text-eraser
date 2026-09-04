@@ -5,6 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TextEraser — 文字擦除</title>
 <link rel="stylesheet" href="/static/style.css?v=6">
+<style>
+  .compute-toggle { margin-left: 12px; }
+  .compute-toggle small { color: #8a93a6; font-weight: 400; }
+  .compute-badge {
+    margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; background: #2b3344; color: #c7d0e0; border: 1px solid #3a4456;
+  }
+  .compute-badge.local { background: #1f5132; color: #b6f5cf; border-color: #2f7d4f; }
+  .shared-badge {
+    margin-left: 8px; padding: 4px 10px; border-radius: 999px; font-size: 12px;
+    font-weight: 600; background: #2b3344; color: #8a93a6; border: 1px solid #3a4456;
+    transition: background .2s, color .2s, border-color .2s;
+  }
+  .shared-badge.active { background: #4a3a12; color: #ffd98a; border-color: #8a6d2f; }
+</style>
 </head>
 <body>
 <header>
@@ -62,6 +77,13 @@
       </label>
       <button class="example-btn" id="exampleBtn">🎯 使用示例图</button>
       <button class="hist-btn" id="histBtn">📜 历史</button>
+
+      <label class="checkbox-inline compute-toggle">
+        <input type="checkbox" id="browserCompute">
+        本地浏览器计算<small>(纯前端运行, 不依赖后端算法; 需联网加载 opencv.js / onnxruntime)</small>
+      </label>
+      <span class="compute-badge" id="computeBadge" title="当前计算位置">后端计算</span>
+      <span class="shared-badge" id="sharedCoreBadge" title="前后端共用同一套 WASM 算法核 (textcore.wasm)">共享核 ✕</span>
 
       <details class="advanced" open>
         <summary>高级参数（默认值即可复现）</summary>
@@ -145,6 +167,7 @@
   <button class="run-btn" id="runBtn" disabled>🚀 擦除</button>
 </div>
 
+<script type="module" src="/static/browser-engine.mjs"></script>
 <script src="/static/app.js?v=6"></script>
 </body>
 </html>

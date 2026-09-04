@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>text-eraser-browser · smoke</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 16px; max-width: 1100px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+  .card { border: 1px solid #444; border-radius: 8px; padding: 8px; }
+  canvas { image-rendering: pixelated; max-width: 320px; background: #222; }
+  label { display: block; margin: 4px 0; }
+  button { padding: 6px 12px; }
+  #log { white-space: pre-wrap; background: #111; color: #9f9; padding: 8px; border-radius: 8px; max-height: 260px; overflow: auto; }
+  .ok { color: #5f5; } .bad { color: #f77; }
+</style>
+</head>
+<body>
+<h2>text-eraser-browser · browser smoke</h2>
+<p>Serve this folder over HTTP (ES modules + Worker need http://, not file://):<br>
+   <code>cd browser &amp;&amp; python -m http.server 8080</code> then open <code>http://localhost:8080/smoke/smoke.html</code>.</p>
+
+<div class="row">
+  <div class="card"><label>Image (PNG)</label><input id="imgFile" type="file" accept="image/*"></div>
+  <div class="card"><label>Fill mask (PNG, 255=target)</label><input id="maskFile" type="file" accept="image/*"></div>
+  <div class="card"><label>Reference (PNG, for maxDiff)</label><input id="refFile" type="file" accept="image/*"></div>
+  <div class="card"><label>Text mask (PNG, for erase)</label><input id="txtFile" type="file" accept="image/*"></div>
+</div>
+
+<div class="row" style="margin-top:12px">
+  <button id="runInpaint">Run inpaint()</button>
+  <button id="runErase">Run eraseTextGlyphs()</button>
+  <label>flatTex <input id="flatTex" type="number" value="15" step="0.5" style="width:60px"></label>
+  <label>edge <input id="edge" type="number" value="1" style="width:50px"></label>
+  <label>deglow <input id="deglow" type="checkbox" checked></label>
+</div>
+
+<div class="row" style="margin-top:12px">
+  <div class="card"><div>Input</div><canvas id="cIn" width="10" height="10"></canvas></div>
+  <div class="card"><div>Mask</div><canvas id="cMask" width="10" height="10"></canvas></div>
+  <div class="card"><div>Result</div><canvas id="cOut" width="10" height="10"></canvas></div>
+  <div class="card"><div>Reference</div><canvas id="cRef" width="10" height="10"></canvas></div>
+</div>
+
+<div id="log"></div>
+
+<script type="module" src="./smoke.js"></script>
+</body>
+</html>

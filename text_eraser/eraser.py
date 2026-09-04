@@ -17,7 +17,11 @@
 from __future__ import annotations
 import time
 import numpy as np
-import cv2
+# Shared-algorithm-core cv2 shim: routes dilate/erode/morphologyEx/connectedComponents/
+# cvtColor(RGB2GRAY) through textcore.wasm (same operators the browser runs) and falls
+# through to the real cv2 for everything else. Keeps the backend + browser parity.
+from text_eraser import _cv as cv2
+from text_eraser import _shared_core
 
 from text_eraser.text_select import (detect_text_mask, _deglow_faint_green,
                               _deglow_faint_green_v11, _deglow_full_green,
@@ -667,61 +671,62 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
         fill_max_dist=fill_max_dist,
     )
+    if not tmask.any():
+        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
+                "method": "ml", "boxes": []}
+        return (rgb, tmask, meta) if return_mask else (rgb, meta)
 
-    # 2) 先去发光(减绿度)：绿晕→中性灰, 返回去发光后的 clean 全图
-    #    (同时取发光区 zone: 供步骤3b「亮核吸收」用)
-    clean, _, zone = _deglow_full_green_v2(
-        rgb, tmask, strength=deglow_strength,
-        zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-        protect_px=deglow_protect_px,
-        deglow_chroma_keep=deglow_chroma_keep, return_zone=True)
+    # 2) 去发光: 取 clean(供步骤3「去发光图上再检测」); 同时取 zone(亮核吸收用)。
+    #    按模式显式分流(不静默降级): 共享核可用 → 只走 wasm(与浏览器同一份 Rust
+    #    实现, 两端逐字节一致; Python 核心最终将被完全剔除, 不作回退)。
+    #    TEXTCORE_BACKEND=0(Python 核心调试模式) → cv2 路径。
+    if _shared_core.using_shared_core():
+        clean0, _core_unused, zone0 = _shared_core.deglow_full_green_v2(
+            rgb, tmask, strength=deglow_strength,
+            zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
+            protect_px=deglow_protect_px, chroma_keep=1 if deglow_chroma_keep else 0)
+        zone0 = (zone0 > 0).astype(np.uint8) * 255
+    else:
+        clean0, _, zone0 = _deglow_full_green_v2(
+            rgb, tmask, strength=deglow_strength,
+            zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
+            protect_px=deglow_protect_px,
+            deglow_chroma_keep=deglow_chroma_keep, return_zone=True)
 
-    # 3) 普通去文字算法(非高亮路径):
-    #    文字蒙版 = 原始图(白字 vs 绿背景对比强、漏检少, tint=False 不把光晕当字)
-    #              ∪ 去发光图(自动并入残余绿 tint=True) → 二者互补,
-    #    修复「清晰度导致文字蒙版缺一点」; 再闭运算补笔画断裂 → patch_fill。
+    # 3) 普通去文字蒙版 = 原图检测 ∪ 去发光图检测(tint=True) → 闭运算补断裂
     tm_clean, boxes = detect_text_mask(
-        clean, method="ml", q_off=q_off,
+        clean0, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
         max_side=ml_max_side, tint_fill=True, fill_white=fill_white,
         fill_max_dist=fill_max_dist,
     )
     mask = ((tmask > 0) | (tm_clean > 0)).astype(np.uint8) * 255
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
-    # 方案B: 白字亮侧连通补全(在**并集后**整体跑) —— 吃掉低分辨率下文字边缘
-    # 1~3px 的 AA 渐隐环带(实测 130~137 中性灰, Otsu 切在 ~255 处, 整条带被
-    # 留在蒙版外 → 结果「碎块」; 膨胀只能包围种子, 对整条带无效)。
-    # 只在去完发光的 clean 上生长: 光晕已减绿变暗, 不会被误吞; 绿度门进一步
-    # 排除残余绿。门限维持 6轮/min_rgb118(保守): 低对比背景图(换装.png 金色
-    # 雾面 min_rgb p50=82 但亮部 110+)会被放宽门整圈吞进蒙版 → 蒙版含非文字。
-    # 「被绿晕染色的中等亮度笔画」(668 两横, min_rgb 中位 103)由下一步
-    # 亮核吸收负责召回 —— 它有 zone+距离+小连通块三重强约束, 换装这类
-    # 无发光图(zone=0)吸收步不运行, 两类图互不干扰。
-    mask = _fill_bright_near_mask(clean, mask)
-    # 3b) 发光区内亮核吸收: 绿晕隔开的文字孤立小部件(DBNet 漏框、距主蒙版
-    #     超过方案B生长半径、重建 detail 又保留其亮度) → 按「zone 内 + 距蒙版
-    #     ≤18px + 亮于背景 + 近白(min_rgb≥100) + 小连通块 + 原图带绿」并入蒙版。
-    #     min_rgb_lo=100: 兼顾 668 两横(min_rgb 中位 103)与噪声余量;
-    #     换装(zone=0)不运行, 不受影响。
-    mask = _absorb_zone_bright_core(clean, rgb, mask, zone, min_rgb_lo=100)
     if not mask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
-                "method": "ml", "boxes": [], "deglow_img": clean}
-        return (clean, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
-            else (clean, meta)
+                "method": "ml", "boxes": [], "deglow_img": clean0}
+        return (clean0, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
+            else (clean0, meta)
 
-    # 填充取样剔除残余绿(未净发光边缘), 防复制进文字区
-    sample_exclude = _residual_green(clean, mask)
-    # 暗源剔除: 发光图的文字上下文是「去发光后的背景」, 若取样区里有远暗于
-    # 该上下文的斑纹(枯枝/暗纹), 大块字洞内部锚定弱时会被 patchmatch 拉来
-    # 填成黑块(556 实测: 笔画白芯 lum≈159、上下文 74~85, 填充却成了 35~55)。
-    # 仅在真正发生过去发光(zone 非空)时启用; 换装等无发光图零改动。
-    if zone is not None and bool((zone > 0).any()):
-        _dx = _dark_source_exclude(clean, mask)
+    # 4) 蒙版修复(zone 亮核吸收) + 取样剔除 + 填充 —— 与 Python 核心同一条 cv2 链路。
+    #    _run_fill → patch_fill.inpaint: 平滑区(tex<flat_tex) cv2 TELEA; 纹理区在
+    #    共享核可用时走 Rust PatchMatch(与浏览器 patchmatchInpaintShared 同一份
+    #    wasm), 不可用回退 numpy 实现 —— 两者随机流已统一为 mulberry32,
+    #    相同输入逐字节一致。
+    mask = _fill_bright_near_mask(clean0, mask)
+    mask = _absorb_zone_bright_core(clean0, rgb, mask, zone0, min_rgb_lo=100)
+    if not mask.any():
+        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
+                "method": "ml", "boxes": [], "deglow_img": clean0}
+        return (clean0, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
+            else (clean0, meta)
+    sample_exclude = _residual_green(clean0, mask)
+    if zone0 is not None and bool((zone0 > 0).any()):
+        _dx = _dark_source_exclude(clean0, mask)
         if _dx is not None:
             sample_exclude = (_dx | sample_exclude) if sample_exclude is not None \
                 else _dx
-    res = _run_fill(clean, mask, boxes, edge=edge, direction=direction,
+    res = _run_fill(clean0, mask, boxes, edge=edge, direction=direction,
                     edge_aware=edge_aware,
                     return_mask=return_mask, t0=t0,
                     sample_exclude=sample_exclude, soft_expand=soft_expand)
@@ -729,8 +734,8 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         result, mask_filled, meta = res
     else:
         result, meta = res
-    meta["deglow_img"] = clean
-    meta["glow_zone"] = zone          # 发光区(前端「发光蒙版」展示用)
+    meta["deglow_img"] = clean0
+    meta["glow_zone"] = zone0
     return (result, mask_filled, meta) if return_mask else (result, meta)
 
 

@@ -23,7 +23,10 @@ import threading
 import urllib.request
 from typing import Optional
 
-import cv2
+# Shared-algorithm-core cv2 shim: routes dilate/erode/morphologyEx/connectedComponents/
+# cvtColor(RGB2GRAY) through textcore.wasm (same operators the browser runs) and falls
+# through to the real cv2 for everything else. Keeps the backend + browser parity.
+from text_eraser import _cv as cv2
 import numpy as np
 
 

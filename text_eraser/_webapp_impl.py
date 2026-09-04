@@ -10,10 +10,17 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import logging
+import mimetypes
 import os
 import shutil
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Browsers refuse to execute module scripts / Workers served as text/plain.
+# Python's stdlib mimetypes does not know .mjs → force it to JavaScript.
+mimetypes.add_type("application/javascript", ".mjs")
 
 import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -23,10 +30,47 @@ from PIL import Image
 
 from text_eraser import __version__
 from text_eraser.eraser import erase_text
+# Shared WASM algorithm core — single source of truth shared with the browser.
+# using_shared_core() reports whether the backend is dispatching through it (wasm
+# loaded by wasmtime) or falling back to cv2. Surfaced to the UI as a badge.
+from text_eraser._shared_core import using_shared_core
+
+logger = logging.getLogger(__name__)
 
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_DIR.parent
 STATIC_DIR = _PACKAGE_DIR / "static"
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # Best-effort: make sure the "本地浏览器计算" assets (opencv.js, onnxruntime-web,
+    # DBNet model, bundled pipeline) are present before the first request. They are
+    # large 3rd-party artifacts that are NOT committed (see .gitignore), so we
+    # download/copy them once on boot. Run in a background thread so an offline box
+    # never stalls server boot. On failure we log; the toggle then surfaces a clear
+    # error instead of the worker hanging 15s.
+    import asyncio
+
+    async def _bootstrap():
+        try:
+            from text_eraser._browser_assets import ensure_browser_assets
+
+            res = await asyncio.to_thread(ensure_browser_assets)
+            missing = [k for k, v in res.items() if v.startswith("error")]
+            if missing:
+                logger.warning("[browser-assets] 缺失/不可用: %s（离线或网络受限；"
+                               "本地浏览器计算将不可用，可改用后端计算）", missing)
+            else:
+                logger.info("[browser-assets] 浏览器计算资源已就绪")
+        except Exception as e:  # never block boot on asset issues
+            logger.warning("[browser-assets] 准备失败（已忽略，不影响后端计算）: %s", e)
+
+    task = asyncio.create_task(_bootstrap())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 def _env_first(*names: str) -> str:
@@ -54,10 +98,53 @@ def _default_data_dir() -> Path:
 DATA_DIR = _default_data_dir()
 HISTORY_DIR = DATA_DIR / "history"
 
-app = FastAPI(title="TextEraser", version=__version__)
+app = FastAPI(title="TextEraser", version=__version__, lifespan=_lifespan)
+
+
+# ---------------------------------------------------------------------------
+# Cross-Origin-Isolation headers (COOP/COEP).
+#
+# The "本地浏览器计算" (pure-browser) path runs onnxruntime-web (DBNet text
+# detection) in a Web Worker. onnxruntime-web's *threaded* wasm build spawns
+# pthread workers that REQUIRE SharedArrayBuffer, which only exists when the
+# document is cross-origin isolated (COOP: same-origin + COEP: require-corp).
+# Without these headers the threaded wasm silently hangs for minutes during
+# InferenceSession.create / session.run. Setting them makes the page
+# `crossOriginIsolated` so the wasm works (and also lets the non-threaded
+# fallback path resolve correctly).
+# ---------------------------------------------------------------------------
+@app.middleware("http")
+async def _add_cross_origin_isolation(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Embedder-Policy", "require-corp")
+    # Allow same-origin workers / importScripts under COEP.
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    # Never cache the browser-engine assets (worker + importScripts + wasm/models):
+    # a stale cached bundle/worker is the usual cause of "still initializing".
+    if request.url.path.startswith(("/static/", "/browser/", "/shared/")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return response
+
 
 # static files
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# serve the pure-browser ESM port so the web UI can run algorithms client-side
+# (the "本地浏览器计算" toggle loads /browser/dist/te-bundle.js + opencv.js +
+#  onnxruntime-web + DBNet model, all auto-bootstrapped into browser/vendor &
+#  browser/dist by text_eraser._browser_assets on startup)
+_BROWSER_DIR = _REPO_ROOT / "browser"
+if _BROWSER_DIR.is_dir():
+    app.mount("/browser", StaticFiles(directory=str(_BROWSER_DIR)), name="browser")
+
+# serve the SHARED algorithm core wasm (textcore.wasm). BOTH the browser Worker
+# (fetched over HTTP) and the Python backend (loaded via wasmtime from the same
+# file on disk) run the exact same operators — this is the "前后端共用一套算法"
+# single source of truth. The browser binding fetches /shared/build/textcore.wasm.
+_SHARED_DIR = _REPO_ROOT / "shared"
+if _SHARED_DIR.is_dir():
+    app.mount("/shared", StaticFiles(directory=str(_SHARED_DIR)), name="shared")
 
 
 @app.get("/")
@@ -69,6 +156,14 @@ async def index():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": __version__, "ts": int(time.time())}
+
+
+@app.get("/api/browser-assets")
+async def browser_assets():
+    """浏览器计算所需资源是否已就位（供前端在开启「本地浏览器计算」前判断）。"""
+    from text_eraser._browser_assets import browser_assets_status
+
+    return browser_assets_status()
 
 
 @app.get("/api/example.png")
@@ -364,6 +459,9 @@ async def erase(
             "auto_edge": auto_edge,
             "auto_max_edge": auto_max_edge,
         },
+        # 当前是否经「共享算法核」(textcore.wasm) 计算 —— 后端与浏览器共用同一份算子，
+        # 前端据此点亮「共享核」徽标，让用户直观看到两种模式都跑的是同一套算法。
+        "shared_core": bool(using_shared_core()),
     }
 
     if return_overlay:

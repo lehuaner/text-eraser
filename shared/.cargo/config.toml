@@ -1,0 +1,7 @@
+# wasm32 builds: enable the simd128 target feature so LLVM can auto-vectorize the
+# planar stencils (Jacobi/gaussian/resize). Wasm SIMD f32x4 ops are IEEE-754 per-lane,
+# identical to scalar — outputs stay byte-identical (verified against the scalar
+# build via data/_pmparity before/after comparison). Supported by wasmtime and all
+# evergreen browsers (Chrome 91+, Firefox 89+, Safari 16.4+).
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "target-feature=+simd128"]
