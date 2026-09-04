@@ -30,6 +30,145 @@ pub use deglow::deglow_full_green_v2;
 pub use deglow::erase_text_glyphs;
 pub use patchmatch::patchmatch_inpaint;
 
+/// Shared export mirroring text_select._grow_color_tint (8-connected tint growth
+/// with per-round budget rollback) so the backend runs the exact same closure as
+/// would-be browser code — one wasm call replaces up to 120 Python↔wasm round
+/// trips. Returns the grown 0/255 u8 mask in out_ptr.
+#[no_mangle]
+pub extern "C" fn grow_color_tint(
+    rgb_ptr: *const f32,
+    mask_ptr: *const u8,
+    h: i32,
+    w: i32,
+    red_thr: f32,
+    green_thr: f32,
+    green_g: f32,
+    rounds_max: i32,
+    max_grow_ratio: f64,
+    out_ptr: *mut u8,
+) {
+    let h = h as usize;
+    let w = w as usize;
+    let n = h * w;
+    let rgb = unsafe { std::slice::from_raw_parts(rgb_ptr, n * 3) };
+    let mask = unsafe { std::slice::from_raw_parts(mask_ptr, n) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_ptr, n) };
+    let grown = deglow::grow_color_tint(
+        rgb, mask, h, w, red_thr, green_thr, green_g,
+        rounds_max.max(0) as usize, max_grow_ratio);
+    out.copy_from_slice(&grown);
+}
+
+/// DEBUG/BRIDGE export: the smooth-background TELEA decision + fill, exposed so the
+/// Python backend's `patch_fill.inpaint` can run the EXACT same host-side decision
+/// and TELEA implementation as the browser's `erase_text_glyphs` (byte parity for
+/// smooth glow images, e.g. 1787822778556). Writes filled f32 H*W*3 to `out_ptr`
+/// and returns 1 when the smooth branch fired (tex < flat_tex), 0 otherwise.
+#[no_mangle]
+pub extern "C" fn pm_smooth_telea_full(
+    rgb_ptr: *const f32,
+    mask_ptr: *const u8,
+    h: i32,
+    w: i32,
+    flat_tex: f32,
+    out_ptr: *mut f32,
+) -> i32 {
+    let h = h as usize;
+    let w = w as usize;
+    let n = h * w;
+    let rgb = unsafe { std::slice::from_raw_parts(rgb_ptr, n * 3) };
+    let mask = unsafe { std::slice::from_raw_parts(mask_ptr, n) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_ptr, n * 3) };
+    match patchmatch::pm_smooth_telea_with_flat_tex(rgb, mask, h as i32, w as i32, flat_tex) {
+        Some(filled) => {
+            out.copy_from_slice(&filled);
+            1
+        }
+        None => 0,
+    }
+}
+
+/// DEBUG HOOK (cross-end field parity rig, handover §13.5): expose the geodesic
+/// background stage WITH ALL INTERMEDIATES so Python can compare each sub-step
+/// against the cv2 reference. NOT part of the stable API.
+///
+/// Out layout (sequential, little-endian), h2 = H/2, w2 = W/2 (scale 2 for small
+/// images; n2 = h2*w2, n = h*w):
+///   lum   : n2 f32
+///   rz    : n2 u8
+///   rgb_s : n2*3 f32
+///   sy    : n2 i32
+///   sx    : n2 i32
+///   b_s   : n2*3 f32
+///   b_up  : n*3 f32
+///   b_sm  : n*3 f32
+///   e_s[0]: n2 f32   (extra[0] gathered at low res)
+///   e_s[1]: n2 f32
+///   e_f[0]: n f32    (extra[0] cubic-up)
+///   e_f[1]: n f32
+/// Caller must pass a buffer of (4*(n2 + n2*3 + n2 + n2 + n2*3 + n*3 + n*3)
+///                            + 1*n2 + 4*(n2 + n2 + n + n)) bytes.
+#[no_mangle]
+pub extern "C" fn deglow_debug_geodesic(
+    rgb_ptr: *const f32,
+    h: i32,
+    w: i32,
+    zone_ptr: *const u8,
+    ring_ptr: *const u8,
+    out_ptr: *mut u8,
+) {
+    use deglow::{geodesic_background, GeoDbg};
+    let h = h as usize;
+    let w = w as usize;
+    let n = h * w;
+    let scale = if (h.min(w) as i32) >= 160 { 4 } else { 2 };
+    let h2 = (h / scale).max(2);
+    let w2 = (w / scale).max(2);
+    let n2 = h2 * w2;
+    let rgb = unsafe { std::slice::from_raw_parts(rgb_ptr, n * 3) };
+    let zone = unsafe { std::slice::from_raw_parts(zone_ptr, n) };
+    let ring = unsafe { std::slice::from_raw_parts(ring_ptr, n) };
+    let r: Vec<f32> = (0..n).map(|i| rgb[i * 3]).collect();
+    let g: Vec<f32> = (0..n).map(|i| rgb[i * 3 + 1]).collect();
+    let b: Vec<f32> = (0..n).map(|i| rgb[i * 3 + 2]).collect();
+    let rg = (0..n).map(|i| r[i] - g[i]).collect::<Vec<_>>();
+    let gb = (0..n).map(|i| g[i] - b[i]).collect::<Vec<_>>();
+    let mut dbg = GeoDbg::default();
+    let (_, _extras) =
+        geodesic_background(rgb, h, w, zone, &[rg, gb], Some(ring), Some(&mut dbg));
+    unsafe {
+        let mut p = out_ptr as *mut u8;
+        let put_f32 = |pp: &mut *mut u8, v: &[f32]| {
+            let bytes = std::slice::from_raw_parts(
+                v.as_ptr() as *const u8, v.len() * 4);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), *pp, bytes.len());
+            *pp = pp.add(bytes.len());
+        };
+        let put_i32 = |pp: &mut *mut u8, v: &[i32]| {
+            let bytes = std::slice::from_raw_parts(
+                v.as_ptr() as *const u8, v.len() * 4);
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), *pp, bytes.len());
+            *pp = pp.add(bytes.len());
+        };
+        let put_u8 = |pp: &mut *mut u8, v: &[u8]| {
+            std::ptr::copy_nonoverlapping(v.as_ptr(), *pp, v.len());
+            *pp = pp.add(v.len());
+        };
+        put_f32(&mut p, &dbg.lum);
+        put_u8(&mut p, &dbg.rz);
+        put_f32(&mut p, &dbg.rgb_s);
+        put_i32(&mut p, &dbg.sy);
+        put_i32(&mut p, &dbg.sx);
+        put_f32(&mut p, &dbg.b_s);
+        put_f32(&mut p, &dbg.b_up);
+        put_f32(&mut p, &dbg.b_sm);
+        put_f32(&mut p, &dbg.e_s[0]);
+        put_f32(&mut p, &dbg.e_s[1]);
+        put_f32(&mut p, &dbg.e_f[0]);
+        put_f32(&mut p, &dbg.e_f[1]);
+    }
+}
+
 /// Allocate `size` bytes in the module's linear memory. Returns a pointer
 /// (linear-memory offset). Free with `dealloc(ptr, size)`.
 #[no_mangle]
@@ -235,6 +374,21 @@ pub extern "C" fn morphology(
     let kh = kh as usize;
     let kw = kw as usize;
     let kern = unsafe { std::slice::from_raw_parts(kern_ptr, kh * kw) };
+    // PERF (byte-exact): prefix-sum row-segment fast paths — same tap set and
+    // border semantics as the naive loop below (kept for reference/fallback).
+    // dilate: OOB taps skipped; erode: OOB taps ignored (clip, cv2 default border).
+    // TEMP-BISECT: fast path disabled while hunting a parity regression.
+    let is_dilate = op != 0;
+    if false && is_dilate {
+        let o = deglow::dilate_kernel_fast(mask, h, w, kern, kh, kw);
+        for i in 0..n { out[i] = o[i]; }
+        return;
+    }
+    if false && !is_dilate {
+        let o = deglow::erode_kernel_fast(mask, h, w, kern, kh, kw, false);
+        for i in 0..n { out[i] = o[i]; }
+        return;
+    }
     let ax = (kw / 2) as i32; // anchor x = floor(kw/2)
     let ay = (kh / 2) as i32; // anchor y = floor(kh/2)
     let is_dilate = op != 0;

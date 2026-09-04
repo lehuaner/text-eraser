@@ -25,6 +25,8 @@ text_eraser/models/det/*.onnx
 browser/vendor/
 # 浏览器端 ESM 管线打包产物（由 `node browser/build.mjs` 生成，非源码）
 browser/dist/
+# 浏览器端构建依赖（esbuild 等，由 `npm install` 生成）
+browser/node_modules/
 
 # 工具记忆
 .workbuddy/

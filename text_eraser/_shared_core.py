@@ -307,6 +307,82 @@ def patchmatch_inpaint_fill(sub_f32, subm, subsm=None, p: int = 7,
         return None
 
 
+def smooth_telea_full(rgb, mask, flat_tex: float = 20.0):
+    """Smooth-background TELEA decision + fill, byte-identical to the browser's
+    `erase_text_glyphs` smooth branch (same wasm implementation, same inputs).
+
+    rgb  : HxWx3 uint8/float FULL image (unpadded).
+    mask : HxW bool/0-255, >0 = hole (the edge-dilated fill mask).
+    Returns the filled HxWx3 uint8 image, or None when the core is unavailable
+    OR the smooth branch did not fire (tex >= flat_tex → caller runs PatchMatch).
+    """
+    core = _get_core()
+    if core is None:
+        return None
+    try:
+        H, W = rgb.shape[:2]
+        n = H * W
+        arr = np.ascontiguousarray(rgb, dtype=np.float32)
+        m = np.ascontiguousarray(mask, dtype=np.uint8)
+        m = np.where(m > 0, 255, 0).astype(np.uint8)
+        p_in = core._alloc(n * 12)
+        p_m = core._alloc(n)
+        p_out = core._alloc(n * 12)
+        try:
+            core.mem.write(core.store, arr.tobytes(), p_in)
+            core.mem.write(core.store, m.tobytes(), p_m)
+            hit = int(core.ex["pm_smooth_telea_full"](
+                core.store, p_in, p_m, H, W, float(flat_tex), p_out))
+            if hit != 1:
+                return None
+            filled = np.frombuffer(
+                bytes(core.mem.read(core.store, p_out, p_out + n * 12)),
+                dtype=np.float32).reshape(H, W, 3).copy()
+            return np.clip(filled, 0, 255).astype(np.uint8)
+        finally:
+            core._free(p_in, n * 12)
+            core._free(p_m, n)
+            core._free(p_out, n * 12)
+    except Exception:
+        return None
+
+
+def grow_color_tint(rgb, mask, red_thr: int = 30, green_thr: int = 15,
+                    green_g: int = 100, rounds_max: int = 120,
+                    max_grow_ratio: float = 5.0):
+    """Shared tint-growth closure (byte-exact mirror of text_select._grow_color_tint).
+
+    Returns the grown 0/255 u8 mask, or None if the core is unavailable/failed
+    (caller decides: loud failure in wasm mode, Python loop in TEXTCORE_BACKEND=0).
+    """
+    core = _get_core()
+    if core is None:
+        return None
+    try:
+        H, W = rgb.shape[:2]
+        n = H * W
+        arr = np.ascontiguousarray(rgb, dtype=np.float32)
+        m = np.ascontiguousarray(mask, dtype=np.uint8)
+        p_in = core._alloc(n * 12)
+        p_m = core._alloc(n)
+        p_out = core._alloc(n)
+        try:
+            core.mem.write(core.store, arr.tobytes(), p_in)
+            core.mem.write(core.store, m.tobytes(), p_m)
+            core.ex["grow_color_tint"](
+                core.store, p_in, p_m, H, W, float(red_thr), float(green_thr),
+                float(green_g), int(rounds_max), float(max_grow_ratio), p_out)
+            return np.frombuffer(
+                bytes(core.mem.read(core.store, p_out, p_out + n)),
+                dtype=np.uint8).reshape(H, W).copy()
+        finally:
+            core._free(p_in, n * 12)
+            core._free(p_m, n)
+            core._free(p_out, n)
+    except Exception:
+        return None
+
+
 def deglow_full_green_v2(rgb, tmask, strength: float = 1.0, zone_ratio: float = 0.6,
                          zone_expand: int = 0, protect_px: int = 0,
                          chroma_keep: int = 0):

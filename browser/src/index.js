@@ -163,7 +163,7 @@ function imageDataLike(img) {
  * Content-aware fill (PatchMatch + TELEA fallback).
  * @param {ImageData} imageData
  * @param {object} opts { mask, sampleMask=null, direction=null,
- *                        flatSpan=40, flatTex=15.0, shouldCancel=null }
+ *                        flatSpan=40, flatTex=20.0, shouldCancel=null }
  * @returns {Promise<ImageData>}
  */
 export async function inpaint(imageData, opts = {}) {
@@ -179,7 +179,7 @@ export async function inpaint(imageData, opts = {}) {
     sampleMask: sample255,
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
   return rgbToImageData(out, H, W);
@@ -189,7 +189,7 @@ export async function inpaint(imageData, opts = {}) {
  * Erase text glyphs given a text mask.
  * @param {ImageData} imageData
  * @param {object} opts { textMask, edge=1, deglow=true, deglowStrength=1.0,
- *                        limit=null, direction=null, flatSpan=40, flatTex=15.0,
+ *                        limit=null, direction=null, flatSpan=40, flatTex=20.0,
  *                        shouldCancel=null }
  * @returns {Promise<ImageData>}
  */
@@ -256,7 +256,7 @@ export async function eraseTextGlyphs(imageData, opts = {}) {
     sampleMask: mask255From01(sample01),
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
   return rgbToImageData(out, H, W);
@@ -384,6 +384,10 @@ export async function erase(imageData, opts = {}) {
   // back to the pure-JS pipeline below when the core is unavailable or deglow disabled.
   if (cvb.usingSharedCore() && typeof SharedCore.eraseTextGlyphs === 'function' && opts.deglow !== false) {
     const _edge = opts.edge ?? 1;
+    // 镜像后端 erase_text 入口的力度提升: v2 减绿度允许略过冲以去净淡绿残迹
+    // (text_eraser.eraser: deglow_strength = max(float(strength), 1.15))。
+    // 浏览器不提升的话, 去发光/重检测/填充全部与后端分歧。
+    const ds = Math.max(opts.deglowStrength ?? 1.0, 1.15);
     const rgbF32 = new Float32Array(n * 3);
     for (let i = 0; i < n * 3; i++) rgbF32[i] = rgb[i];
 
@@ -397,7 +401,7 @@ export async function erase(imageData, opts = {}) {
     const tmask = textMask255;
     const [cleanU8_t0] = SharedCore.deglowFullGreenV2(
       rgbF32, H, W, tmask,
-      opts.deglowStrength ?? 1.0,
+      ds,
       opts.deglowZoneRatio ?? 0.6,
       opts.deglowZoneExpand ?? 10,
       opts.deglowProtectPx ?? 1,
@@ -419,7 +423,7 @@ export async function erase(imageData, opts = {}) {
     }
     const [resultU8, fillU8, cleanU8, zoneU8] = SharedCore.eraseTextGlyphs(
       rgbF32, H, W, tmask, tmClean,
-      opts.deglowStrength ?? 1.0,
+      ds,
       opts.deglowZoneRatio ?? 0.6,
       opts.deglowZoneExpand ?? 10,
       opts.deglowProtectPx ?? 1,
@@ -443,7 +447,7 @@ export async function erase(imageData, opts = {}) {
     const _cfg = {
       glow_mode: "auto",
       deglow_scheme: "v2",
-      deglow_strength: opts.deglowStrength ?? 1.0,
+      deglow_strength: ds,
       deglow_green_thr: opts.deglowGreenThr ?? 6.0,
       deglow_range: opts.deglowRange ?? 24,
       deglow_glo: opts.deglowGlo ?? 85.0,
@@ -503,7 +507,7 @@ export async function erase(imageData, opts = {}) {
     sampleMask: mask255From01(sample01),
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
 

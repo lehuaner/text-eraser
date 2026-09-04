@@ -80,7 +80,7 @@ export function patchmatchInpaint(rgb, H, W, mask255, opts = {}) {
     sampleMask: sampleMask255 = null,
     direction = null,
     flatSpan = 40,
-    flatTex = 15.0,
+    flatTex = 20.0,
     shouldCancel = null,
   } = opts;
 
@@ -94,11 +94,13 @@ export function patchmatchInpaint(rgb, H, W, mask255, opts = {}) {
   const OH = H, OW = W;
 
   // ---- smooth-gradient TELEA fallback (mirrors textpatch_fill.py) ----
-  // NOTE on fidelity: upstream code triggers TELEA when `tex < flat_tex` ONLY
-  // (the span>=flatSpan branch was removed in a later commit; see patch_fill.py
-  // comment lines 131-141). `flatSpan` is kept in the signature for parity but
-  // the live gate is `tex < flatTex`. Flip FLAT_USE_SPAN=true to also require
-  // span>=flatSpan (the stricter spec prose variant).
+  // NOTE on fidelity: upstream (patch_fill.inpaint) fires TELEA when the ring
+  // texture median `tex < flat_tex` ONLY (the span>=flatSpan requirement was
+  // removed; `flatSpan` is kept in the signature for parity but the live gate
+  // is `tex < flatTex`). flatTex MUST equal Python's flat_tex default (20.0):
+  // a background with tex in [15, 20) would take TELEA on the backend but
+  // PatchMatch here. Flip FLAT_USE_SPAN=true to also require span>=flatSpan
+  // (the stricter spec prose variant).
   const FLAT_USE_SPAN = false;
   let spanCheck = true;
   if (direction === null) {

@@ -21,13 +21,13 @@ import numpy as np
 # cvtColor(RGB2GRAY) through textcore.wasm (same operators the browser runs) and falls
 # through to the real cv2 for everything else. Keeps the backend + browser parity.
 from text_eraser import _cv as cv2
+from text_eraser import _shared_core
 
 from text_eraser.text_select import (detect_text_mask, _deglow_faint_green,
                               _deglow_faint_green_v11, _deglow_full_green,
                               _deglow_full_green_v2, _fill_bright_near_mask,
                               _absorb_zone_bright_core)
 from text_eraser.patch_fill import inpaint as pm_inpaint
-from text_eraser import _shared_core
 
 
 def _ellipse(p: int) -> np.ndarray:
@@ -677,15 +677,15 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         return (rgb, tmask, meta) if return_mask else (rgb, meta)
 
     # 2) 去发光: 取 clean(供步骤3「去发光图上再检测」); 同时取 zone(亮核吸收用)。
-    #    优先走共享核(wasm, 与浏览器同一份字节); 失败则回退 cv2。
-    core = _shared_core._get_core()
-    chroma_i = 1 if deglow_chroma_keep else 0
-    if core is not None:
-        clean0, _, _zone_unused = _shared_core.deglow_full_green_v2(
+    #    按模式显式分流(不静默降级): 共享核可用 → 只走 wasm(与浏览器同一份 Rust
+    #    实现, 两端逐字节一致; Python 核心最终将被完全剔除, 不作回退)。
+    #    TEXTCORE_BACKEND=0(Python 核心调试模式) → cv2 路径。
+    if _shared_core.using_shared_core():
+        clean0, _core_unused, zone0 = _shared_core.deglow_full_green_v2(
             rgb, tmask, strength=deglow_strength,
             zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-            protect_px=deglow_protect_px, chroma_keep=chroma_i)
-        zone0 = None  # 最终 zone 由下方共享核 erase_text_glyphs 一并返回
+            protect_px=deglow_protect_px, chroma_keep=1 if deglow_chroma_keep else 0)
+        zone0 = (zone0 > 0).astype(np.uint8) * 255
     else:
         clean0, _, zone0 = _deglow_full_green_v2(
             rgb, tmask, strength=deglow_strength,
@@ -708,27 +708,11 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         return (clean0, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
             else (clean0, meta)
 
-    # 4) 共享核: 一步跑完「mask 修复(zone 亮核吸收 + 残余绿/暗源剔除) + PatchMatch
-    #    填充」—— 与浏览器 Worker 调用同一份 wasm, 结果逐字节一致。失败则回退 cv2。
-    if core is not None:
-        res = _shared_core.erase_text_glyphs(
-            rgb, tmask, tm_clean, strength=deglow_strength,
-            zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-            protect_px=deglow_protect_px, chroma_keep=chroma_i,
-            edge=edge, direction_deg=direction if direction is not None else -1.0,
-            seed=0, edge_aware=1 if edge_aware else 0,
-            soft_expand=soft_expand)
-        if res is not None:
-            result, fill, clean, zone = res
-            mask_filled = fill
-            meta = {"mask_pix": int((mask > 0).sum()),
-                    "mask_filled_pix": int((mask_filled > 0).sum()),
-                    "inpaint_seconds": time.time() - t0,
-                    "method": "ml-shared-core", "boxes": boxes,
-                    "deglow_img": clean, "glow_zone": zone}
-            return (result, mask_filled, meta) if return_mask else (result, meta)
-
-    # --- cv2 回退路径(共享核不可用或调用失败) ---
+    # 4) 蒙版修复(zone 亮核吸收) + 取样剔除 + 填充 —— 与 Python 核心同一条 cv2 链路。
+    #    _run_fill → patch_fill.inpaint: 平滑区(tex<flat_tex) cv2 TELEA; 纹理区在
+    #    共享核可用时走 Rust PatchMatch(与浏览器 patchmatchInpaintShared 同一份
+    #    wasm), 不可用回退 numpy 实现 —— 两者随机流已统一为 mulberry32,
+    #    相同输入逐字节一致。
     mask = _fill_bright_near_mask(clean0, mask)
     mask = _absorb_zone_bright_core(clean0, rgb, mask, zone0, min_rgb_lo=100)
     if not mask.any():

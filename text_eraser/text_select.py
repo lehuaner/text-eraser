@@ -21,6 +21,7 @@ import numpy as np
 # cvtColor(RGB2GRAY) through textcore.wasm (same operators the browser runs) and falls
 # through to the real cv2 for everything else. Keeps the backend + browser parity.
 from text_eraser import _cv as cv2
+from text_eraser._shared_core import grow_color_tint as _sc_grow_color_tint, using_shared_core
 
 from PIL import Image
 
@@ -497,15 +498,34 @@ def _fill_nearby_white(rgb: np.ndarray, mask: np.ndarray,
     if not mask.any():
         return mask
     lum = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    H, W = mask.shape[:2]
+
+    def _bbox(cur):
+        ys, xs = np.where(cur > 0)
+        return ys, xs
+
+    def _crop_round(cur, kernel, thr):
+        """一轮「裁剪域膨胀 + 阈值吸收」：膨胀是局部算子, 裁剪边距 = 2×核半径+1
+        (本轮可被新增的像素 ≤ 核半径, 其膨胀窗再外扩核半径) 时, 裁剪域内的结果
+        与全图膨胀逐位一致 —— 把 O(全图) 轮次降到 O(局部)。"""
+        ys, xs = np.where(cur > 0)
+        r = kernel.shape[0] // 2 * 2 + 1
+        y0 = max(0, int(ys.min()) - r); y1 = min(H, int(ys.max()) + 1 + r)
+        x0 = max(0, int(xs.min()) - r); x1 = min(W, int(xs.max()) + 1 + r)
+        sub = cur[y0:y1, x0:x1]
+        dil = cv2.dilate(sub, kernel)
+        add = (dil > 0) & (lum[y0:y1, x0:x1] > thr)
+        new_sub = cv2.bitwise_or(sub, add.astype(np.uint8) * 255)
+        changed = bool((new_sub != sub).any())
+        if changed:
+            cur[y0:y1, x0:x1] = new_sub
+        return changed
+
     cur = mask
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pad * 2 + 1, pad * 2 + 1))
     for _ in range(rounds):
-        dil = cv2.dilate(cur, kernel)
-        add = (dil > 0) & (lum > min_lum)
-        new = cv2.bitwise_or(cur, add.astype(np.uint8) * 255)
-        if not bool((new != cur).any()):
+        if not _crop_round(cur, kernel, min_lum):
             break
-        cur = new
     add = np.zeros_like(cur, bool)
     if max_dist > 0 and max_dist < 1024:
         dist = cv2.distanceTransform((cur == 0).astype(np.uint8),
@@ -519,12 +539,8 @@ def _fill_nearby_white(rgb: np.ndarray, mask: np.ndarray,
     if aa_tail_lum > 0 and aa_tail_rounds > 0:
         k1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         for _ in range(aa_tail_rounds):
-            dil = cv2.dilate(cur, k1)
-            add = (dil > 0) & (lum >= aa_tail_lum)
-            new = cv2.bitwise_or(cur, add.astype(np.uint8) * 255)
-            if not bool((new != cur).any()):
+            if not _crop_round(cur, k1, aa_tail_lum - 1):
                 break
-            cur = new
     return cur
 
 
@@ -715,6 +731,14 @@ def _grow_color_tint(rgb: np.ndarray, mask: np.ndarray,
     tint = red_tint | green_tint
     if not tint.any():
         return mask
+    # 共享核可用: 一次 wasm 调用完成整个逐轮闭合(与 Python 循环逐位一致,
+    # 省掉 120 轮 Python↔wasm 往返); Python 核心模式走下方原循环。
+    if using_shared_core():
+        _r = _sc_grow_color_tint(rgb, mask, red_thr, green_thr,
+                                 green_g, rounds_max, max_grow_ratio)
+        if _r is None:
+            raise RuntimeError("shared core grow_color_tint failed")
+        return _r
     cur = (mask > 0).astype(np.uint8)
     cap = max(1, int((mask > 0).sum() * max_grow_ratio))
     k = np.ones((3, 3), np.uint8)

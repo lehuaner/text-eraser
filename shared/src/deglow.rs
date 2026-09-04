@@ -67,6 +67,192 @@ fn ellipse_kernel(ksize: i32) -> Vec<u8> {
     k
 }
 
+/// Fast flat-kernel binary dilation for ANY u8 kernel (ellipse/box/...):
+/// O(kh·n) via per-kernel-row horizontal prefix-sum windows + row shift-OR,
+/// replacing the naive O(n·kh·kw) tap loop. Bit-exact vs the naive version:
+/// binary max/OR of the same tap set (outside = 0), evaluated per kernel row.
+pub(crate) fn dilate_kernel_fast(mask: &[u8], h: usize, w: usize, k: &[u8], kh: usize, kw: usize) -> Vec<u8> {
+    let ax = (kw / 2) as i32;
+    let ay = (kh / 2) as i32;
+    let mut out = vec![0u8; h * w];
+    // PERF: build the per-row prefix counts ONCE (they depend only on the source
+    // row, not on the kernel row) — the old code rebuilt them per (ky, y).
+    let mut pref = vec![0u32; h * (w + 1)];
+    for y in 0..h {
+        let row = y * w;
+        let prow = y * (w + 1);
+        let mut acc = 0u32;
+        for x in 0..w {
+            acc += (mask[row + x] != 0) as u32;
+            pref[prow + x + 1] = acc;
+        }
+    }
+    for ky in 0..kh as i32 {
+        // horizontal tap extent of this kernel row
+        let mut x0 = -1i32;
+        let mut x1 = -2i32;
+        for kx in 0..kw as i32 {
+            if k[(ky * kw as i32 + kx) as usize] != 0 {
+                if x0 < 0 { x0 = kx; }
+                x1 = kx;
+            }
+        }
+        if x0 < 0 { continue; } // empty kernel row
+        let dy = ky - ay;
+        // D[y][x] = OR of src[y + dy][x + j - ax] for j in x0..=x1 (OOB = 0)
+        for y in 0..h {
+            let base = y as i64 + dy as i64;
+            if base < 0 || base >= h as i64 { continue; }
+            let prow = (base as usize) * (w + 1);
+            let drow = y * w;
+            for x in 0..w {
+                if out[drow + x] != 0 { continue; }
+                // window over src indices [x + x0 - ax, x + x1 - ax] ∩ [0, w)
+                let lo = x as i64 + x0 as i64 - ax as i64;
+                let hi = x as i64 + x1 as i64 - ax as i64;
+                if lo > hi || lo >= w as i64 || hi < 0 { continue; }
+                let l = lo.max(0) as usize;
+                let rgt = (hi.min(w as i64 - 1)) as usize;
+                if pref[prow + rgt + 1] - pref[prow + l] > 0 {
+                    out[drow + x] = 1;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Fast flat-kernel binary erosion (mirror of dilate_kernel_fast).
+/// `oob_background=false`: OOB taps are IGNORED (cv2.erode default borderValue=+inf;
+/// used by the lib.rs `morphology` export and its naive mirror). A kernel row fully
+/// outside the image imposes no constraint; a clipped window requires only the
+/// in-image taps to be set.
+/// `oob_background=true`: OOB taps count as background (deglow's erode_ellipse
+/// semantics — OOB forces the output to 0).
+pub(crate) fn erode_kernel_fast(
+    mask: &[u8], h: usize, w: usize, k: &[u8], kh: usize, kw: usize,
+    oob_background: bool,
+) -> Vec<u8> {
+    let ax = (kw / 2) as i32;
+    let ay = (kh / 2) as i32;
+    let mut out = vec![1u8; h * w];
+    // PERF: per-row prefix built once (see dilate_kernel_fast).
+    let mut pref = vec![0u32; h * (w + 1)];
+    for y in 0..h {
+        let row = y * w;
+        let prow = y * (w + 1);
+        let mut acc = 0u32;
+        for x in 0..w {
+            acc += (mask[row + x] != 0) as u32;
+            pref[prow + x + 1] = acc;
+        }
+    }
+    for ky in 0..kh as i32 {
+        let mut x0 = -1i32;
+        let mut x1 = -2i32;
+        let mut taps = 0u32;
+        for kx in 0..kw as i32 {
+            if k[(ky * kw as i32 + kx) as usize] != 0 {
+                if x0 < 0 { x0 = kx; }
+                x1 = kx;
+                taps += 1;
+            }
+        }
+        if x0 < 0 { continue; }
+        let dy = ky - ay;
+        for y in 0..h {
+            let base = y as i64 + dy as i64;
+            if base < 0 || base >= h as i64 {
+                if oob_background {
+                    // entire kernel row out of bounds -> this row erodes to 0 everywhere
+                    for x in 0..w { out[y * w + x] = 0; }
+                }
+                // else: ignore-OOB semantics — this row imposes no constraint
+                continue;
+            }
+            let prow = (base as usize) * (w + 1);
+            for x in 0..w {
+                if out[y * w + x] == 0 { continue; }
+                let lo = x as i64 + x0 as i64 - ax as i64;
+                let hi = x as i64 + x1 as i64 - ax as i64;
+                if oob_background {
+                    if lo < 0 || hi >= w as i64 {
+                        // some tap out of bounds -> background tap -> erode to 0
+                        out[y * w + x] = 0;
+                        continue;
+                    }
+                    let l = lo as usize;
+                    let rgt = hi as usize;
+                    if pref[prow + rgt + 1] - pref[prow + l] < taps {
+                        out[y * w + x] = 0;
+                    }
+                } else {
+                    // ignore-OOB: required = number of taps landing inside the image
+                    let li = lo.max(0);
+                    let ri = hi.min(w as i64 - 1);
+                    if ri < li { continue; } // zero in-image taps -> no constraint
+                    let l = li as usize;
+                    let rgt = ri as usize;
+                    let required = (rgt - l + 1) as u32;
+                    if pref[prow + rgt + 1] - pref[prow + l] < required {
+                        out[y * w + x] = 0;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Mirror of text_select._grow_color_tint: 8-connected growth along tint pixels
+/// from the text mask, with per-round budget rollback. Byte-exact vs the Python
+/// loop by construction: round k adds exactly the tint pixels at Chebyshev
+/// distance k from the seed mask (one cv2.dilate(k3) step per round), and the
+/// budget rollback = not applying the round that would exceed the cap.
+pub(crate) fn grow_color_tint(
+    rgb: &[f32], mask: &[u8], h: usize, w: usize,
+    red_thr: f32, green_thr: f32, green_g: f32,
+    rounds_max: usize, max_grow_ratio: f64,
+) -> Vec<u8> {
+    let n = h * w;
+    let mut tint = vec![false; n];
+    for i in 0..n {
+        let r = rgb[i * 3];
+        let g = rgb[i * 3 + 1];
+        let b = rgb[i * 3 + 2];
+        // integer-valued f32 comparisons — identical to Python's int16 math
+        let red = r - g.max(b) > red_thr;
+        let green = g - r.max(b) > green_thr && g > green_g;
+        tint[i] = red || green;
+    }
+    let mut cur = vec![0u8; n];
+    let mut cnt: i64 = 0;
+    for i in 0..n {
+        if mask[i] != 0 { cur[i] = 1; cnt += 1; }
+    }
+    let cap = ((cnt as f64 * max_grow_ratio).max(1.0)) as i64;
+    let mut add = vec![0u8; n];
+    for _ in 0..rounds_max {
+        let dil = box_dilate(&cur, h, w);
+        let mut add_cnt: i64 = 0;
+        for i in 0..n {
+            if dil[i] != 0 && tint[i] && cur[i] == 0 {
+                add[i] = 1;
+                add_cnt += 1;
+            } else {
+                add[i] = 0;
+            }
+        }
+        if add_cnt == 0 { break; }
+        if cnt + add_cnt > cap { break; } // rollback = don't apply this round
+        for i in 0..n { if add[i] != 0 { cur[i] = 1; } }
+        cnt += add_cnt;
+    }
+    let mut out = vec![0u8; n];
+    for i in 0..n { out[i] = if cur[i] != 0 { 255 } else { 0 }; }
+    out
+}
+
 /// cv2.cvtColor(RGB2GRAY) fixed-point, returned as f32 (matches cv2 .astype(f32)).
 pub(crate) fn gray_f32(rgb: &[f32], n: usize) -> Vec<f32> {
     let mut g = vec![0f32; n];
@@ -81,6 +267,13 @@ pub(crate) fn gray_f32(rgb: &[f32], n: usize) -> Vec<f32> {
 }
 
 fn dilate_ellipse(mask: &[u8], h: usize, w: usize, ksize: i32) -> Vec<u8> {
+    // Hot path (29/21/17-px ellipses on full frames): prefix-sum row-segment
+    // dilation — bit-exact vs the naive tap loop (kept as *_naive for tests).
+    let k = ellipse_kernel(ksize);
+    dilate_kernel_fast(mask, h, w, &k, ksize as usize, ksize as usize)
+}
+
+fn dilate_ellipse_naive(mask: &[u8], h: usize, w: usize, ksize: i32) -> Vec<u8> {
     let k = ellipse_kernel(ksize);
     let kh = ksize as usize;
     let kw = ksize as usize;
@@ -106,6 +299,13 @@ fn dilate_ellipse(mask: &[u8], h: usize, w: usize, ksize: i32) -> Vec<u8> {
 }
 
 fn erode_ellipse(mask: &[u8], h: usize, w: usize, ksize: i32) -> Vec<u8> {
+    // Hot path mirror of dilate_ellipse; OOB taps = background (matches the
+    // naive loop below, which sets all=false on OOB).
+    let k = ellipse_kernel(ksize);
+    erode_kernel_fast(mask, h, w, &k, ksize as usize, ksize as usize, true)
+}
+
+fn erode_ellipse_naive(mask: &[u8], h: usize, w: usize, ksize: i32) -> Vec<u8> {
     let k = ellipse_kernel(ksize);
     let kh = ksize as usize;
     let kw = ksize as usize;
@@ -358,11 +558,28 @@ fn geodesic_sources(lum: &[f32], h2: usize, w2: usize, src_mask: &[u8]) -> (Vec<
     (src_y, src_x)
 }
 
+/// Debug intermediates of the geodesic chain (cross-end parity rig, handover
+/// §13.5). Filled only when `Some`, so production cost is nil.
+#[derive(Default)]
+pub(crate) struct GeoDbg {
+    pub lum: Vec<f32>,
+    pub rz: Vec<u8>,
+    pub rgb_s: Vec<f32>,
+    pub sy: Vec<i32>,
+    pub sx: Vec<i32>,
+    pub b_s: Vec<f32>,
+    pub b_up: Vec<f32>,
+    pub b_sm: Vec<f32>,
+    pub e_s: Vec<Vec<f32>>,
+    pub e_f: Vec<Vec<f32>>,
+}
+
 /// Returns B (h*w*3 f32) and optionally extras (each h*w f32) propagated with the
 /// same source map. `extra_src` (if any) defines a separate source set for extras.
-fn geodesic_background(
+pub(crate) fn geodesic_background(
     rgb: &[f32], h: usize, w: usize, zone: &[u8],
     extra: &[Vec<f32>], extra_src: Option<&[u8]>,
+    mut dbg: Option<&mut GeoDbg>,
 ) -> (Vec<f32>, Vec<Vec<f32>>) {
     let scale = if (h.min(w) as i32) >= 160 { 4 } else { 2 };
     let h2 = (h / scale).max(2);
@@ -388,6 +605,16 @@ fn geodesic_background(
     }
     let b_up = resize_cubic(&b, h2, w2, h, w, 3);
     let b_sm = gaussian_blur_3(&b_up, h, w, 4.0);
+    if let Some(d) = dbg.as_deref_mut() {
+        d.lum = lum.clone();
+        d.rz = rz.clone();
+        d.rgb_s = rgb_s.clone();
+        d.sy = sy.clone();
+        d.sx = sx.clone();
+        d.b_s = b.clone();
+        d.b_up = b_up.clone();
+        d.b_sm = b_sm.clone();
+    }
     let mut extras_up = Vec::new();
     if extra.is_empty() {
         return (b_sm, extras_up);
@@ -408,6 +635,18 @@ fn geodesic_background(
         }
         let e_f = resize_cubic(&e_up, h2, w2, h, w, 1);
         extras_up.push(gaussian_blur(&e_f, h, w, 4.0));
+    }
+    if let Some(d) = dbg.as_deref_mut() {
+        // e_up (gathered, pre-cubic) per extra
+        for (k, e) in extra.iter().enumerate() {
+            let e_s = resize_area(e, h, w, h2, w2, 1);
+            let mut e_up = vec![0f32; h2 * w2];
+            for i in 0..h2 * w2 {
+                e_up[i] = e_s[ey[i] as usize * w2 + ex[i] as usize];
+            }
+            d.e_s.push(e_up.clone());
+            d.e_f.push(resize_cubic(&e_up, h2, w2, h, w, 1));
+        }
     }
     (b_sm, extras_up)
 }
@@ -714,30 +953,47 @@ fn harmonic_solve(
     }
     // cv2 Jacobi: up/down/left/right use edge REPLICATION (np.vstack/np.hstack clamp
     // at the border) and ALWAYS divide by 4 — border pixels average with themselves.
+    // PERF (byte-exact): split to per-channel PLANES with a double buffer — the
+    // per-element op stays (up+down+left+right) with left-assoc f32 adds, /4, on the
+    // same f32 values; non-domain pixels never change so both buffers only need one
+    // identical init (the old code cloned the full interleaved buffer every iteration).
+    let mut cur: [Vec<f32>; 3] = [
+        (0..n).map(|i| b[i * 3]).collect(),
+        (0..n).map(|i| b[i * 3 + 1]).collect(),
+        (0..n).map(|i| b[i * 3 + 2]).collect(),
+    ];
+    let mut nxt: [Vec<f32>; 3] = [cur[0].clone(), cur[1].clone(), cur[2].clone()];
     for _ in 0..iters {
-        let mut nb = b.clone();
-        for y in 0..h {
-            let yu = if y == 0 { 0 } else { y - 1 };
-            let yd = if y + 1 >= h { h - 1 } else { y + 1 };
-            for x in 0..w {
-                let i = y * w + x;
-                if domain_l[i] == 0 { continue; }
-                let xl = if x == 0 { 0 } else { x - 1 };
-                let xr = if x + 1 >= w { w - 1 } else { x + 1 };
-                for ch in 0..3 {
-                    let up = b[(yu * w + x) * 3 + ch];
-                    let down = b[(yd * w + x) * 3 + ch];
-                    let left = b[(y * w + xl) * 3 + ch];
-                    let right = b[(y * w + xr) * 3 + ch];
+        for c in 0..3 {
+            let bc = &cur[c];
+            let nc = &mut nxt[c];
+            for y in 0..h {
+                let yu = if y == 0 { 0 } else { y - 1 };
+                let yd = if y + 1 >= h { h - 1 } else { y + 1 };
+                let rowu = yu * w;
+                let rowd = yd * w;
+                let row = y * w;
+                for x in 0..w {
+                    let i = row + x;
+                    if domain_l[i] == 0 { continue; }
+                    let xl = if x == 0 { 0 } else { x - 1 };
+                    let xr = if x + 1 >= w { w - 1 } else { x + 1 };
+                    let up = bc[rowu + x];
+                    let down = bc[rowd + x];
+                    let left = bc[row + xl];
+                    let right = bc[row + xr];
                     // left-assoc f32 adds, matching numpy's (up+down+left+right)/4
                     let t1 = up + down;
                     let t2 = t1 + left;
                     let t3 = t2 + right;
-                    nb[i * 3 + ch] = t3 / 4.0;
+                    nc[i] = t3 / 4.0;
                 }
             }
         }
-        b = nb;
+        std::mem::swap(&mut cur, &mut nxt);
+    }
+    for c in 0..3 {
+        for i in 0..n { b[i * 3 + c] = cur[c][i]; }
     }
     Some(b)
 }
@@ -966,37 +1222,63 @@ fn pm_fill_roi(
     h0: usize, w0: usize,
     direction_deg: f32, seed: u32,
 ) -> Vec<f32> {
-    let n = h0 * w0;
+    // ROI 提取必须与 text_eraser/patch_fill.inpaint 逐位一致: 先 replicate
+    // 扩边 4px, 在「扩边坐标系」里算 bbox/margin(int 截断, 非 round)并 clamp
+    // 到扩边尺寸——此前在未扩边坐标系提取(且 margin 用 round), 小图上 ROI 比
+    // 后端少一圈扩边环, 候选池不同 → 填充纹理必然不同。
+    const PADM: i64 = 4;
+    let h = h0 + 2 * PADM as usize;
+    let w = w0 + 2 * PADM as usize;
+    let n = h * w;
     let mut res: Vec<f32> = clean.to_vec();
-    let mut ymin = h0; let mut ymax = 0usize;
-    let mut xmin = w0; let mut xmax = 0usize;
+    // 扩边: clean 按 BORDER_REPLICATE, hole/excl 环带置 0
+    let mut img = vec![0f32; n * 3];
+    let mut m = vec![0u8; n];
+    let mut sm = vec![0u8; n];
+    for y in 0..h {
+        let sy = (y as i64 - PADM).clamp(0, h0 as i64 - 1) as usize;
+        for x in 0..w {
+            let sx = (x as i64 - PADM).clamp(0, w0 as i64 - 1) as usize;
+            let d = (y * w + x) * 3;
+            let s0 = (sy * w0 + sx) * 3;
+            img[d] = clean[s0];
+            img[d + 1] = clean[s0 + 1];
+            img[d + 2] = clean[s0 + 2];
+        }
+    }
+    let mut ymin = h; let mut ymax = 0usize;
+    let mut xmin = w; let mut xmax = 0usize;
     let mut any = false;
     for y in 0..h0 {
         for x in 0..w0 {
+            let d = (y + PADM as usize) * w + (x + PADM as usize);
+            m[d] = hole[y * w0 + x];
+            sm[d] = if hole[y * w0 + x] != 0 || excl[y * w0 + x] != 0 { 0 } else { 255 };
             if hole[y * w0 + x] != 0 {
                 any = true;
-                if y < ymin { ymin = y; }
-                if y > ymax { ymax = y; }
-                if x < xmin { xmin = x; }
-                if x > xmax { xmax = x; }
+                let py_ = y + PADM as usize;
+                let px_ = x + PADM as usize;
+                if py_ < ymin { ymin = py_; }
+                if py_ > ymax { ymax = py_; }
+                if px_ < xmin { xmin = px_; }
+                if px_ > xmax { xmax = px_; }
             }
         }
     }
     if !any { return res; }
     let span = ((ymax - ymin + 1) as f32).max((xmax - xmin + 1) as f32);
-    let mut margin = (32.0f32).max((0.6 * span).round());
-    margin = margin.max((0.9 * span).round()).max(80.0);
-    let mut margin = margin as i64;
+    let mut margin = (32i64).max((0.6 * span) as i64);
+    margin = margin.max((0.9 * span) as i64).max(80);
     let mut ry0 = ((ymin as i64) - margin).max(0) as usize;
-    let mut ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
+    let mut ry1 = ((ymax as i64) + 1 + margin).min(h as i64) as usize;
     let mut rx0 = ((xmin as i64) - margin).max(0) as usize;
-    let mut rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
+    let mut rx1 = ((xmax as i64) + 1 + margin).min(w as i64) as usize;
     while ((ry1 - ry0).max(rx1 - rx0) as i64) > 1536 && margin > 24 {
         margin = (margin as f64 * 0.85) as i64;
         ry0 = ((ymin as i64) - margin).max(0) as usize;
-        ry1 = ((ymax as i64) + 1 + margin).min(h0 as i64) as usize;
+        ry1 = ((ymax as i64) + 1 + margin).min(h as i64) as usize;
         rx0 = ((xmin as i64) - margin).max(0) as usize;
-        rx1 = ((xmax as i64) + 1 + margin).min(w0 as i64) as usize;
+        rx1 = ((xmax as i64) + 1 + margin).min(w as i64) as usize;
     }
     let sh = ry1 - ry0;
     let sw = rx1 - rx0;
@@ -1007,16 +1289,14 @@ fn pm_fill_roi(
     for y in 0..sh {
         for x in 0..sw {
             let si = (y * sw + x) * 3;
-            let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
-            sub_in[si] = clean[gi];
-            sub_in[si + 1] = clean[gi + 1];
-            sub_in[si + 2] = clean[gi + 2];
+            let gi = ((y + ry0) * w + (x + rx0)) * 3;
+            sub_in[si] = img[gi];
+            sub_in[si + 1] = img[gi + 1];
+            sub_in[si + 2] = img[gi + 2];
             let mi = y * sw + x;
-            let gmi = (y + ry0) * w0 + (x + rx0);
-            sub_mf[mi] = hole[gmi];
-            let mut s = if hole[gmi] != 0 { 0u8 } else { 255u8 };
-            if excl[gmi] != 0 { s = 0; }
-            sub_s[mi] = s;
+            let gmi = (y + ry0) * w + (x + rx0);
+            sub_mf[mi] = m[gmi];
+            sub_s[mi] = sm[gmi];
         }
     }
     let p_in = crate::alloc(sub_n * 3 * 4);
@@ -1034,10 +1314,16 @@ fn pm_fill_roi(
         p_in as *const f32, sh as i32, sw as i32, p_mf, p_s, 1, 7,
         direction_deg, seed, p_out as *mut f32);
     let out_f32 = unsafe { std::slice::from_raw_parts(p_out as *const f32, sub_n * 3) };
-    for y in 0..sh {
-        for x in 0..sw {
-            let si = (y * sw + x) * 3;
-            let gi = ((y + ry0) * w0 + (x + rx0)) * 3;
+    // 写回: sub 位于扩边坐标 [ry0,ry1)x[rx0,rx1), 对应原图 [ry0-PADM, ry1-PADM)
+    // 与原图求交后拷贝(环带内容是 replicate, 与 res 既有值一致)
+    let oy0 = (ry0 as i64 - PADM).max(0) as usize;
+    let ox0 = (rx0 as i64 - PADM).max(0) as usize;
+    let oy1 = (ry1 as i64 - PADM).min(h0 as i64) as usize;
+    let ox1 = (rx1 as i64 - PADM).min(w0 as i64) as usize;
+    for y in oy0..oy1 {
+        for x in ox0..ox1 {
+            let si = ((y + PADM as usize - ry0) * sw + (x + PADM as usize - rx0)) * 3;
+            let gi = (y * w0 + x) * 3;
             res[gi] = out_f32[si];
             res[gi + 1] = out_f32[si + 1];
             res[gi + 2] = out_f32[si + 2];
@@ -1137,23 +1423,25 @@ pub extern "C" fn deglow_full_green_v2(
         * (if zone_ratio > 0.0 { zone_ratio as f64 } else { 0.6 })) as i64;
     // cv2 uses k3 = np.ones((3,3)) — a 3x3 SQUARE (8-connectivity) dilation for the
     // zone growth, NOT an ellipse. Must match exactly.
+    // PERF (byte-exact): hoist the per-round `add` buffer and track the zone count
+    // incrementally (add requires zone==0, so |zone∪add| = |zone|+|add| exactly).
+    let mut add = vec![0u8; n];
+    let mut zone_count: i64 = zone.iter().filter(|&&v| v != 0).count() as i64;
     for _ in 0..400 {
         let dil = box_dilate(&zone, h, w);
         let mut added = false;
-        let mut add = vec![0u8; n];
+        let mut add_cnt = 0i64;
         for i in 0..n {
-            if dil[i] != 0 && grow_cond[i] && zone[i] == 0 {
-                add[i] = 1;
-                added = true;
-            }
+            let v = if dil[i] != 0 && grow_cond[i] && zone[i] == 0 { 1u8 } else { 0u8 };
+            add[i] = v;
+            if v != 0 { added = true; add_cnt += 1; }
         }
         if !added { break; }
-        let mut sum = 0i64;
-        for i in 0..n { if zone[i] != 0 || add[i] != 0 { sum += 1; } }
-        if sum > budget {
+        if zone_count + add_cnt > budget {
             break; // rollback implied: we simply stop applying add
         }
         for i in 0..n { if add[i] != 0 { zone[i] = 1; } }
+        zone_count += add_cnt;
     }
 
     // zone_expand: applied to the RETURNED `zone` (matches cv2 — `zone` gets the
@@ -1222,14 +1510,14 @@ pub extern "C" fn deglow_full_green_v2(
             let rg = (0..n).map(|i| r[i] - g[i]).collect::<Vec<_>>();
             let gb = (0..n).map(|i| g[i] - b[i]).collect::<Vec<_>>();
             let (b_field, extras) = geodesic_background(
-                rgb, h, w, &geo_mask, &[rg, gb], Some(&ring_clean));
+                rgb, h, w, &geo_mask, &[rg, gb], Some(&ring_clean), None);
             B = Some(b_field);
             if extras.len() >= 2 {
                 d_rg = Some(extras[0].clone());
                 d_gb = Some(extras[1].clone());
             }
         } else {
-            let (b_field, _) = geodesic_background(rgb, h, w, &geo_mask, &[], None);
+            let (b_field, _) = geodesic_background(rgb, h, w, &geo_mask, &[], None, None);
             B = Some(b_field);
         }
     }
@@ -1358,7 +1646,7 @@ pub extern "C" fn deglow_full_green_v2(
                     .map(|i| if zone[i] == 0 && dout2[i] >= 10.0 && dout2[i] <= 26.0 && greenness[i] <= 6.0 { 1 } else { 0 })
                     .collect();
                 if rc2.iter().any(|&v| v != 0) {
-                    let (_, es) = geodesic_background(rgb, h, w, &box_erode_iters(&zone, h, w, 3), &[str.clone()], Some(&rc2));
+                    let (_, es) = geodesic_background(rgb, h, w, &box_erode_iters(&zone, h, w, 3), &[str.clone()], Some(&rc2), None);
                     if es.len() >= 1 {
                         let sfield = &es[0];
                         let mut wmix = vec![0f32; n];
@@ -1547,23 +1835,10 @@ fn box_dilate(mask: &[u8], h: usize, w: usize) -> Vec<u8> {
 
 /// Square k×k box dilation (matches cv2.dilate(mask, np.ones((k, k)))).
 fn box_dilate_k(mask: &[u8], h: usize, w: usize, k: i32) -> Vec<u8> {
-    let r = k / 2;
-    let mut out = vec![0u8; h * w];
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let mut hit = false;
-            'o: for dy in -r..=r {
-                for dx in -r..=r {
-                    let ny = y + dy;
-                    let nx = x + dx;
-                    if ny < 0 || nx < 0 || ny >= h as i32 || nx >= w as i32 { continue; }
-                    if mask[(ny as usize) * w + (nx as usize)] != 0 { hit = true; break 'o; }
-                }
-            }
-            out[(y as usize) * w + x as usize] = if hit { 1 } else { 0 };
-        }
-    }
-    out
+    // k×k box kernel via the shared prefix-sum fast path (bit-exact vs naive).
+    let kk = k.max(1) as usize;
+    let kern = vec![1u8; kk * kk];
+    dilate_kernel_fast(mask, h, w, &kern, kk, kk)
 }
 
 fn box_erode(mask: &[u8], h: usize, w: usize) -> Vec<u8> {
@@ -1614,7 +1889,11 @@ fn box_dilate_iters(mask: &[u8], h: usize, w: usize, iters: i32) -> Vec<u8> {
 
 /// cv2.morphologyEx(mask, MORPH_CLOSE, ones((3,3))).
 fn mask_close(mask: &[u8], h: usize, w: usize) -> Vec<u8> {
-    box_erode(&box_dilate(mask, h, w), h, w)
+    // 与后端 `_shared_core.morphology_ex`(MORPH_CLOSE 分支) 逐位一致:
+    // 该 shim 的 CLOSE 分支实现为 dilate(erode(x)) —— 即先腐蚀后膨胀(注意:
+    // 这是形态学"开"的组合, 但它是后端既有且经用户验收的行为, 两端必须
+    // 一致, 故浏览器侧同构复刻, 不按教科书语义"修正")。
+    box_dilate(&box_erode(mask, h, w), h, w)
 }
 
 /// `_fill_bright_near_mask` port (white-text bright-side connectivity completion).
@@ -1826,8 +2105,12 @@ pub extern "C" fn erase_text_glyphs(
     // Non-glow near-smooth backgrounds: diffuse with a more permissive TELEA (20.0)
     // instead of PatchMatch (which would copy texture/text back in). Glow images keep
     // the stricter 15.0 threshold inside patchmatch_inpaint; direction mode skips it.
+    // PARITY (1787822778556): the gate must match patch_fill.inpaint's host-side
+    // decision (tex < flat_tex → cv2 TELEA) EXACTLY — no extra zone condition, or
+    // glow images fill with PatchMatch on the browser while the backend TELEA-fills
+    // the same smooth hole (observed 5997/6160 px divergence).
     let mut skip_pm = false;
-    if !empty && !use_dir && !zone_any {
+    if !empty && !use_dir {
         if let Some(filled) = crate::patchmatch::pm_smooth_telea_with_flat_tex(
             &clean_f32, &mf, h0 as i32, w0 as i32, 20.0)
         {
@@ -1901,4 +2184,162 @@ pub extern "C" fn erase_text_glyphs(
     crate::dealloc(p_clean, n * 3);
     crate::dealloc(p_core, n);
     crate::dealloc(p_zone, n);
+}
+
+// ---------------------------------------------------------------------------
+// Native-only stage bench (cargo test --release --target <host>). NOT compiled
+// into the wasm artifact. Times the deglow internals on a REAL captured frame
+// (data/_pmparity/bench_case.bin, gitignored) to locate hot spots without
+// touching production code paths.
+#[cfg(test)]
+mod bench {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn bench_deglow_stages_369x231() {
+        let path = std::path::Path::new("../data/_pmparity/bench_case.bin");
+        assert!(path.exists(), "bench case missing: run the dumper to create it");
+        let buf = std::fs::read(path).unwrap();
+        let h = i32::from_le_bytes(buf[0..4].try_into().unwrap()) as usize;
+        let w = i32::from_le_bytes(buf[4..8].try_into().unwrap()) as usize;
+        let n = h * w;
+        let rgb: Vec<f32> = buf[8..8 + n * 3].iter().map(|&v| v as f32).collect();
+        let tmask: Vec<u8> = buf[8 + n * 3..8 + n * 4].to_vec();
+        println!("case {}x{}", w, h);
+
+        // ---- replicate deglow_full_green_v2 stage by stage ----
+        let r: Vec<f32> = (0..n).map(|i| rgb[i * 3]).collect();
+        let g: Vec<f32> = (0..n).map(|i| rgb[i * 3 + 1]).collect();
+        let b: Vec<f32> = (0..n).map(|i| rgb[i * 3 + 2]).collect();
+        let t = Instant::now();
+        let gray = gray_f32(&rgb, n);
+        let max_rb: Vec<f32> = r.iter().zip(&b).map(|(a, c)| a.max(*c)).collect();
+        let strong_u8: Vec<u8> = (0..n).map(|i| if g[i] - max_rb[i] > 8.0 && g[i] > 95.0 { 255 } else { 0 }).collect();
+        let (labels, stats) = connected_components_with_stats(&strong_u8, h, w);
+        println!("cc+gray           : {:?}", t.elapsed());
+
+        let t = Instant::now();
+        let mut zone = vec![0u8; n];
+        for i in 0..n { if strong_u8[i] != 0 || tmask[i] > 0 { zone[i] = 1; } }
+        let bg_cand: Vec<f32> = (0..n).filter(|&i| strong_u8[i] == 0).map(|i| gray[i]).collect();
+        let bg_lum = percentile(&bg_cand, 0.5);
+        let gness: Vec<f32> = (0..n).map(|i| (g[i] - max_rb[i]).max(0.0)).collect();
+        let green: Vec<bool> = (0..n).map(|i| g[i] - max_rb[i] > 2.0 && g[i] > 60.0).collect();
+        let bright: Vec<bool> = (0..n).map(|i| gray[i] > bg_lum + 6.0 && gray[i] > 55.0 && gness[i] > 2.0).collect();
+        let faint: Vec<bool> = (0..n).map(|i| g[i] - max_rb[i] > 3.0 && g[i] > 55.0).collect();
+        let mut rounds = 0;
+        let budget = (n as f64 * 0.6) as i64;
+        for _ in 0..400 {
+            let dil = box_dilate(&zone, h, w);
+            let mut added = false;
+            let mut add = vec![0u8; n];
+            for i in 0..n {
+                if dil[i] != 0 && (green[i] || bright[i] || faint[i]) && zone[i] == 0 {
+                    add[i] = 1; added = true;
+                }
+            }
+            if !added { break; }
+            rounds += 1;
+            let mut sum = 0i64;
+            for i in 0..n { if zone[i] != 0 || add[i] != 0 { sum += 1; } }
+            if sum > budget { break; }
+            for i in 0..n { if add[i] != 0 { zone[i] = 1; } }
+        }
+        let zone_ex = dilate_ellipse(&zone, h, w, 21);
+        println!("zone grow({rounds:3}r)+exp21: {:?}", t.elapsed());
+
+        let t = Instant::now();
+        let m_zone29 = dilate_ellipse(&zone_ex, h, w, 29);
+        println!("m_zone exp29      : {:?}", t.elapsed());
+
+        let t = Instant::now();
+        let geo_mask = box_erode_iters(&zone_ex, h, w, 3);
+        let zone_mask: Vec<u8> = zone_ex.iter().map(|&v| if v != 0 { 255 } else { 0 }).collect();
+        let dout = distance_transform(&zone_mask, h, w);
+        let ring: Vec<u8> = (0..n).map(|i| if zone_ex[i] == 0 && dout[i] >= 10.0 && dout[i] <= 26.0 && gness[i] <= 6.0 { 1 } else { 0 }).collect();
+        let rg: Vec<f32> = (0..n).map(|i| r[i] - g[i]).collect();
+        let gb: Vec<f32> = (0..n).map(|i| g[i] - b[i]).collect();
+        let (b_field, extras) = geodesic_background(&rgb, h, w, &geo_mask, &[rg, gb], Some(&ring), None);
+        println!("geodesic B+extras : {:?}", t.elapsed());
+
+        let t = Instant::now();
+        let _bh = harmonic_background(&rgb, &zone_ex, h, w, None);
+        println!("harmonic          : {:?}", t.elapsed());
+        let _ = (m_zone29, &b_field, &extras, labels, stats);
+    }
+
+    /// Byte-exactness gate for the fast morphology: fast vs naive on random masks
+    /// across kernel sizes, covering OOB edge rows/cols.
+    #[test]
+    fn fast_morphology_matches_naive() {
+        let mut a: u32 = 12345;
+        let mut rnd = move || {
+            a = a.wrapping_add(0x6D2B79F5);
+            let mut t = a;
+            t ^= t >> 15; t = t.wrapping_mul(t | 1);
+            t ^= t.wrapping_add(t ^ (t >> 7) | 61);
+            t ^= t >> 14;
+            t
+        };
+        for &(h, w) in &[(61usize, 47usize), (37usize, 88usize)] {
+            for density in [0.05f32, 0.3, 0.7, 0.95] {
+                let mask: Vec<u8> = (0..h * w)
+                    .map(|_| ((rnd() % 1000) as f32 / 1000.0 < density) as u8 * 255)
+                    .collect();
+                for ksize in [3i32, 5, 9, 17, 21, 29] {
+                    let k = ellipse_kernel(ksize);
+                    let (kh, kw) = (ksize as usize, ksize as usize);
+                    let d_fast = dilate_kernel_fast(&mask, h, w, &k, kh, kw);
+                    let d_naive = dilate_ellipse_naive(&mask, h, w, ksize);
+                    assert_eq!(d_fast, d_naive, "dilate ksize={ksize} density={density} {h}x{w}");
+                    let e_fast = erode_kernel_fast(&mask, h, w, &k, kh, kw, true);
+                    let e_naive = erode_ellipse_naive(&mask, h, w, ksize);
+                    assert_eq!(e_fast, e_naive, "erode ksize={ksize} density={density} {h}x{w}");
+                    // clip-OOB erode (lib.rs morphology semantics) vs naive clip mirror
+                    let e_clip = erode_kernel_fast(&mask, h, w, &k, kh, kw, false);
+                    let e_clip_naive = {
+                        let mut o = vec![1u8; h * w];
+                        for y in 0..h as i32 {
+                            for x in 0..w as i32 {
+                                let mut all = true;
+                                'ck: for ky in 0..kh as i32 {
+                                    for kx in 0..kw as i32 {
+                                        if k[(ky * kw as i32 + kx) as usize] == 0 { continue; }
+                                        let nx = x + (kx - kw as i32 / 2);
+                                        let ny = y + (ky - kh as i32 / 2);
+                                        if nx < 0 || ny < 0 || nx >= w as i32 || ny >= h as i32 { continue; }
+                                        if mask[ny as usize * w + nx as usize] == 0 { all = false; break 'ck; }
+                                    }
+                                }
+                                o[y as usize * w + x as usize] = if all { 1 } else { 0 };
+                            }
+                        }
+                        o
+                    };
+                    assert_eq!(e_clip, e_clip_naive, "erode-clip ksize={ksize} density={density} {h}x{w}");
+                    // box kernel through the fast path == naive box (dilate only;
+                    // box_erode 3x3 keeps cv2's ignore-OOB border and stays naive)
+                    let bk = vec![1u8; (ksize * ksize) as usize];
+                    let bd_fast = dilate_kernel_fast(&mask, h, w, &bk, ksize as usize, ksize as usize);
+                    let r = ksize / 2;
+                    let mut bd_naive = vec![0u8; h * w];
+                    for y in 0..h as i32 {
+                        for x in 0..w as i32 {
+                            let mut hit = false;
+                            'o: for dy in -r..=r {
+                                for dx in -r..=r {
+                                    let ny = y + dy; let nx = x + dx;
+                                    if ny < 0 || nx < 0 || ny >= h as i32 || nx >= w as i32 { continue; }
+                                    if mask[ny as usize * w + nx as usize] != 0 { hit = true; break 'o; }
+                                }
+                            }
+                            bd_naive[y as usize * w + x as usize] = if hit { 1 } else { 0 };
+                        }
+                    }
+                    assert_eq!(bd_fast, bd_naive, "box-dilate ksize={ksize} density={density} {h}x{w}");
+                }
+            }
+        }
+    }
 }
