@@ -204,7 +204,11 @@ TextEraser/
 └── deglow/             # 去发光 v4 实验模块 (不随 pip 包发布)
 ```
 
-`scripts/` 下还有一套基于真实样图的回归脚本（`regress_*.py`，样图不入库，需本地自备 `data/` 样图），用于算法调参时的逐位回归验证。
+`scripts/` 保留核心验收与诊断工具：`parity_check.py`（后端 vs 浏览器 wasm 逐字节
+parity 验收门，4 基准图）、`render.py` / `pixel_check.py`（全管线对照与逐像素检查）、
+`dbnet_*.py`（DBNet 诊断）、`_cmp_*` / `_gen_dist.py`（跨端算子对照）、
+`make_release_demo.py`（发布演示图）、`fix_ref.py`（仓库 ref 修复工具）、
+`v4_*.py`（deglow v4 研究，需完整仓库）。
 
 ## 发布
 

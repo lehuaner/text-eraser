@@ -23,7 +23,7 @@ from text_eraser import _shared_core
 DEFAULT_IIDS = ["1787767556635", "1787767611178", "1787822778556", "1787980309628"]
 KW = dict(edge=1, auto_edge=True, auto_max_edge=2, q_off=55.0, max_area_ratio=0.4,
           max_box_ratio=0.4, direction=None, edge_aware=False, return_mask=True,
-          tint_fill=True, fill_white=True, fill_max_dist=12, glow_mode="auto",
+          tint_fill=True, fill_white=True, fill_max_dist=12,
           deglow_scheme="v2", deglow_strength=1.0, deglow_zone_ratio=0.6,
           deglow_zone_expand=10, deglow_protect_px=1, deglow_chroma_keep=True)
 DET = dict(q_off=55.0, max_area_ratio=0.4, max_box_ratio=0.4, tint_fill=False,
