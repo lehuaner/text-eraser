@@ -115,7 +115,7 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
 | `deglow_scheme` | "v2" | 去发光方案："v2" / "off"（无发光图自动零改动） |
 | `max_side` | 960 | DBNet 推理最长边，调大可提升小字召回 |
 
-完整函数级 API 见 [docs/ALGORITHM.md](docs/ALGORITHM.md)。
+完整函数级 API 见 [docs/ALGORITHM.md](docs/ALGORITHM.md)；版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 引擎选择与自定义管线
 
