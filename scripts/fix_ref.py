@@ -36,7 +36,8 @@ def main():
         lines = header + [x for p in pairs for x in p]
         hit = True
     if hit:
-        open(PACKED, "wb").write(("\n".join(lines) + ("\n" if not lines[-1] else "")).encode())
+        lines = [l for l in lines if l != ""]  # 清掉空行(尾部 \n 会 split 出 '')
+        open(PACKED, "wb").write(("\n".join(lines) + "\n").encode())
         print(f"packed-refs {BRANCH} -> {full}")
     else:
         print(f"ref already correct: {full}")
