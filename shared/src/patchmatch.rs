@@ -228,6 +228,7 @@ fn pm_best_source(
 ) -> (i32, i32) {
     const DY4: [i32; 4] = [-1, 1, 0, 0];
     const DX4: [i32; 4] = [0, 0, -1, 1];
+    let stride = HALF * 2 + 1;
 
     let tpatch = pm_gather(work, ty, tx, pw, ph, HALF, PP, PP3);
     // known positions in the target window (patch-flat indices)
@@ -236,8 +237,8 @@ fn pm_best_source(
     // 计算, 与 numpy 参照结构性不一致。
     let mut tkidx: Vec<usize> = Vec::new();
     for j in 0..PP {
-        let wy = ty + (j as i32 / (HALF * 2 + 1)) - HALF;
-        let wx = tx + (j as i32 % (HALF * 2 + 1)) - HALF;
+        let wy = ty + (j as i32 / stride) - HALF;
+        let wx = tx + (j as i32 % stride) - HALF;
         if wy >= 0 && wy < ph && wx >= 0 && wx < pw {
             let i = (wy * pw + wx) as usize;
             if known[i] != 0 {
@@ -256,6 +257,13 @@ fn pm_best_source(
     tm[0] /= tkn_sum;
     tm[1] /= tkn_sum;
     tm[2] /= tkn_sum;
+    // PERF(exact): known-tap membership flags — lets the candidate loop walk ALL
+    // taps in one fused pass (gather + SSD + source mean) instead of materialising
+    // each candidate patch into a Vec first.
+    let mut t_known = vec![false; PP];
+    for &j in &tkidx {
+        t_known[j] = true;
+    }
 
     // ---- build candidate pool ----
     let mut pool_y: Vec<i32> = Vec::new();
@@ -316,23 +324,48 @@ fn pm_best_source(
     }
 
     // ---- evaluate pool: SSD over known target positions + mean-compat penalty ----
+    // PERF(exact): fused gather+SSD with early rejection. SSD terms are >= 0, so
+    // once the partial sum reaches the current best the candidate can never win
+    // (the final compare is strict `<`); skipping it leaves the winner unchanged.
+    // The source-mean accumulation is only needed for non-rejected candidates.
     let mut best_s = f32::INFINITY;
     let mut best_i = 0usize;
     for (pi, (&cy, &cx)) in pool_y.iter().zip(pool_x.iter()).enumerate() {
-        let sp = pm_gather(work, cy, cx, pw, ph, HALF, PP, PP3);
-        let sm = pm_patch_mean(&sp, PP);
+        let mut sm = [0f32; 3];
         let mut ssd = 0f32;
-        for &j in &tkidx {
-            let o = j * 3;
-            let d0 = sp[o] - tpatch[o];
-            let d1 = sp[o + 1] - tpatch[o + 1];
-            let d2 = sp[o + 2] - tpatch[o + 2];
-            ssd += d0 * d0 + d1 * d1 + d2 * d2;
+        let mut abort = false;
+        for j in 0..PP {
+            let dy = (j as i32 / stride) - HALF;
+            let dx = (j as i32 % stride) - HALF;
+            let yy = pm_idx(cy + dy, ph);
+            let xx = pm_idx(cx + dx, pw);
+            let s = ((yy * pw + xx) * 3) as usize;
+            let v0 = work[s];
+            let v1 = work[s + 1];
+            let v2 = work[s + 2];
+            sm[0] += v0;
+            sm[1] += v1;
+            sm[2] += v2;
+            if t_known[j] {
+                let o = j * 3;
+                let d0 = v0 - tpatch[o];
+                let d1 = v1 - tpatch[o + 1];
+                let d2 = v2 - tpatch[o + 2];
+                ssd += d0 * d0 + d1 * d1 + d2 * d2;
+                if ssd >= best_s {
+                    abort = true;
+                    break;
+                }
+            }
         }
+        if abort {
+            continue;
+        }
+        let spm = [sm[0] / PP as f32, sm[1] / PP as f32, sm[2] / PP as f32];
         if !use_dir {
-            let dm0 = sm[0] - tm[0];
-            let dm1 = sm[1] - tm[1];
-            let dm2 = sm[2] - tm[2];
+            let dm0 = spm[0] - tm[0];
+            let dm1 = spm[1] - tm[1];
+            let dm2 = spm[2] - tm[2];
             ssd += 4.0 * tkn_sum * (dm0 * dm0 + dm1 * dm1 + dm2 * dm2);
         }
         if ssd < best_s {

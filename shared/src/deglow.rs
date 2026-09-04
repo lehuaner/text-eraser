@@ -740,9 +740,9 @@ fn cubic_w(t: f64) -> f64 {
 }
 
 /// 1-D INTER_AREA (exact area average). Valid for downsampling (m <= n).
-fn area_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
+/// PERF: writes into `out` (caller-reused scratch) instead of allocating.
+fn area_1d_into(src: &[f32], n: usize, m: usize, out: &mut [f32]) {
     let scale = n as f64 / m as f64;
-    let mut out = vec![0f32; m];
     for i in 0..m {
         let lo = i as f64 * scale;
         let hi = (i + 1) as f64 * scale;
@@ -764,13 +764,20 @@ fn area_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
         }
         out[i] = if wsum > 0.0 { (s / wsum) as f32 } else { 0.0 };
     }
+}
+
+/// 1-D INTER_AREA (exact area average), allocating variant kept for callers
+/// that need an owned Vec.
+fn area_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
+    let mut out = vec![0f32; m];
+    area_1d_into(src, n, m, &mut out);
     out
 }
 
 /// 1-D INTER_CUBIC (general up/down), matches cv2's 4-tap bicubic with reflect_101 edges.
-fn cubic_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
+/// PERF: into-variant (caller-reused scratch), same arithmetic as cubic_1d.
+fn cubic_1d_into(src: &[f32], n: usize, m: usize, out: &mut [f32]) {
     let scale = n as f64 / m as f64;
-    let mut out = vec![0f32; m];
     for i in 0..m {
         let sx = (i as f64 + 0.5) * scale - 0.5;
         let x0 = sx.floor() as i32;
@@ -784,46 +791,61 @@ fn cubic_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
         }
         out[i] = s as f32;
     }
+}
+
+fn cubic_1d(src: &[f32], n: usize, m: usize) -> Vec<f32> {
+    let mut out = vec![0f32; m];
+    cubic_1d_into(src, n, m, &mut out);
     out
 }
 
 /// 2-D INTER_AREA, channels-aware. Used only for downsampling in this module.
+/// PERF: row/col scratch buffers are reused across rows/channels (no per-row Vec).
 fn resize_area(src: &[f32], h: usize, w: usize, h2: usize, w2: usize, ch: usize) -> Vec<f32> {
     let mut tmp = vec![0f32; h * w2 * ch];
+    let mut row_buf = vec![0f32; w];
+    let mut row_out = vec![0f32; w2];
+    let mut col_buf = vec![0f32; h];
+    let mut col_out = vec![0f32; h2];
     for y in 0..h {
         for c in 0..ch {
-            let row: Vec<f32> = (0..w).map(|x| src[(y * w + x) * ch + c]).collect();
-            let r = area_1d(&row, w, w2);
-            for i in 0..w2 { tmp[(y * w2 + i) * ch + c] = r[i]; }
+            for x in 0..w { row_buf[x] = src[(y * w + x) * ch + c]; }
+            area_1d_into(&row_buf, w, w2, &mut row_out);
+            for i in 0..w2 { tmp[(y * w2 + i) * ch + c] = row_out[i]; }
         }
     }
     let mut out = vec![0f32; h2 * w2 * ch];
     for i in 0..w2 {
         for c in 0..ch {
-            let col: Vec<f32> = (0..h).map(|y| tmp[(y * w2 + i) * ch + c]).collect();
-            let r = area_1d(&col, h, h2);
-            for jy in 0..h2 { out[(jy * w2 + i) * ch + c] = r[jy]; }
+            for y in 0..h { col_buf[y] = tmp[(y * w2 + i) * ch + c]; }
+            area_1d_into(&col_buf, h, h2, &mut col_out);
+            for jy in 0..h2 { out[(jy * w2 + i) * ch + c] = col_out[jy]; }
         }
     }
     out
 }
 
 /// 2-D INTER_CUBIC, channels-aware (horizontal then vertical, separable).
+/// PERF: scratch buffers reused (same treatment as resize_area).
 fn resize_cubic(src: &[f32], h: usize, w: usize, h2: usize, w2: usize, ch: usize) -> Vec<f32> {
     let mut tmp = vec![0f32; h * w2 * ch];
+    let mut row_buf = vec![0f32; w];
+    let mut row_out = vec![0f32; w2];
+    let mut col_buf = vec![0f32; h];
+    let mut col_out = vec![0f32; h2];
     for y in 0..h {
         for c in 0..ch {
-            let row: Vec<f32> = (0..w).map(|x| src[(y * w + x) * ch + c]).collect();
-            let r = cubic_1d(&row, w, w2);
-            for i in 0..w2 { tmp[(y * w2 + i) * ch + c] = r[i]; }
+            for x in 0..w { row_buf[x] = src[(y * w + x) * ch + c]; }
+            cubic_1d_into(&row_buf, w, w2, &mut row_out);
+            for i in 0..w2 { tmp[(y * w2 + i) * ch + c] = row_out[i]; }
         }
     }
     let mut out = vec![0f32; h2 * w2 * ch];
     for i in 0..w2 {
         for c in 0..ch {
-            let col: Vec<f32> = (0..h).map(|y| tmp[(y * w2 + i) * ch + c]).collect();
-            let r = cubic_1d(&col, h, h2);
-            for jy in 0..h2 { out[(jy * w2 + i) * ch + c] = r[jy]; }
+            for y in 0..h { col_buf[y] = tmp[(y * w2 + i) * ch + c]; }
+            cubic_1d_into(&col_buf, h, h2, &mut col_out);
+            for jy in 0..h2 { out[(jy * w2 + i) * ch + c] = col_out[jy]; }
         }
     }
     out
@@ -957,25 +979,40 @@ fn harmonic_solve(
     // per-element op stays (up+down+left+right) with left-assoc f32 adds, /4, on the
     // same f32 values; non-domain pixels never change so both buffers only need one
     // identical init (the old code cloned the full interleaved buffer every iteration).
+    // PERF2 (byte-exact): precompute per-row RUNS of domain pixels — the inner loop
+    // walks contiguous in-image segments with no per-pixel branch, which lets LLVM
+    // auto-vectorize the stencil. Neighbour reads use pure coordinate clamps
+    // (values of non-domain neighbours are valid in the planes), matching the
+    // original element-for-element.
     let mut cur: [Vec<f32>; 3] = [
         (0..n).map(|i| b[i * 3]).collect(),
         (0..n).map(|i| b[i * 3 + 1]).collect(),
         (0..n).map(|i| b[i * 3 + 2]).collect(),
     ];
     let mut nxt: [Vec<f32>; 3] = [cur[0].clone(), cur[1].clone(), cur[2].clone()];
+    let mut runs: Vec<(u32, u32, u32)> = Vec::new(); // (y, x_start, x_end) half-open
+    for y in 0..h {
+        let row = y * w;
+        let mut x = 0usize;
+        while x < w {
+            while x < w && domain_l[row + x] == 0 { x += 1; }
+            let s = x;
+            while x < w && domain_l[row + x] != 0 { x += 1; }
+            if x > s { runs.push((y as u32, s as u32, x as u32)); }
+        }
+    }
     for _ in 0..iters {
         for c in 0..3 {
             let bc = &cur[c];
             let nc = &mut nxt[c];
-            for y in 0..h {
+            for &(ry, xs, xe) in &runs {
+                let y = ry as usize;
                 let yu = if y == 0 { 0 } else { y - 1 };
                 let yd = if y + 1 >= h { h - 1 } else { y + 1 };
                 let rowu = yu * w;
                 let rowd = yd * w;
                 let row = y * w;
-                for x in 0..w {
-                    let i = row + x;
-                    if domain_l[i] == 0 { continue; }
+                for x in xs as usize..xe as usize {
                     let xl = if x == 0 { 0 } else { x - 1 };
                     let xr = if x + 1 >= w { w - 1 } else { x + 1 };
                     let up = bc[rowu + x];
@@ -986,7 +1023,7 @@ fn harmonic_solve(
                     let t1 = up + down;
                     let t2 = t1 + left;
                     let t3 = t2 + right;
-                    nc[i] = t3 / 4.0;
+                    nc[row + x] = t3 / 4.0;
                 }
             }
         }
