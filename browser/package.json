@@ -10,11 +10,23 @@
   },
   "sideEffects": false,
   "peerDependencies": {
-    "onnxruntime-web": ">=1.16.0"
+    "onnxruntime-web": "^1.27.0"
   },
   "peerDependenciesMeta": {
-    "onnxruntime-web": { "optional": true }
+    "onnxruntime-web": {
+      "optional": true
+    }
   },
-  "keywords": ["text-eraser", "inpaint", "patchmatch", "opencv.js", "browser", "wasm"],
-  "license": "MIT"
+  "keywords": [
+    "text-eraser",
+    "inpaint",
+    "patchmatch",
+    "opencv.js",
+    "browser",
+    "wasm"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "esbuild": "^0.21.5"
+  }
 }

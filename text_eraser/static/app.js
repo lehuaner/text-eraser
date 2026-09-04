@@ -720,4 +720,38 @@
     });
   }
   syncCoreExclusion();   // 初始同步（含刷新后浏览器记忆的勾选状态）
+
+  // 浏览器计算依赖 opencv.js / onnxruntime-web / DBNet 模型 / 打包管线，
+  // 这些大资源在服务端启动时按需自动下载（见 text_eraser._browser_assets）。
+  // 页面加载即查询就绪状态：未就位则禁用开关并提示原因，避免用户点到 15s 超时。
+  // 资源可能仍在后台下载，每 5s 重试一次。
+  function syncBrowserComputeAvailability() {
+    if (!browserComputeEl) return;
+    fetch("/api/browser-assets")
+      .then((r) => r.json())
+      .then((st) => {
+        if (st.ready) {
+          browserComputeEl.disabled = false;
+          browserComputeEl.title = "在浏览器端运行文字擦除（不依赖后端）";
+          return;
+        }
+        const miss = Object.keys(st)
+          .filter((k) => k !== "ready" && st[k] && st[k].present === false)
+          .join(", ");
+        browserComputeEl.disabled = true;
+        browserComputeEl.title =
+          "浏览器计算资源缺失（" + (miss || "未知") +
+          "）；可改用后端计算，或检查网络后刷新页面";
+        setStatus(
+          "本地浏览器计算资源未就绪（" + (miss || "未知") +
+          "），已临时禁用；可改用后端计算，或稍后刷新",
+          "warn"
+        );
+        setTimeout(syncBrowserComputeAvailability, 5000);
+      })
+      .catch(() => {
+        /* 端点不可达（旧版服务端）：不强制禁用，保持原行为 */
+      });
+  }
+  syncBrowserComputeAvailability();
 })();

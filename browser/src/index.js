@@ -163,7 +163,7 @@ function imageDataLike(img) {
  * Content-aware fill (PatchMatch + TELEA fallback).
  * @param {ImageData} imageData
  * @param {object} opts { mask, sampleMask=null, direction=null,
- *                        flatSpan=40, flatTex=15.0, shouldCancel=null }
+ *                        flatSpan=40, flatTex=20.0, shouldCancel=null }
  * @returns {Promise<ImageData>}
  */
 export async function inpaint(imageData, opts = {}) {
@@ -179,7 +179,7 @@ export async function inpaint(imageData, opts = {}) {
     sampleMask: sample255,
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
   return rgbToImageData(out, H, W);
@@ -189,7 +189,7 @@ export async function inpaint(imageData, opts = {}) {
  * Erase text glyphs given a text mask.
  * @param {ImageData} imageData
  * @param {object} opts { textMask, edge=1, deglow=true, deglowStrength=1.0,
- *                        limit=null, direction=null, flatSpan=40, flatTex=15.0,
+ *                        limit=null, direction=null, flatSpan=40, flatTex=20.0,
  *                        shouldCancel=null }
  * @returns {Promise<ImageData>}
  */
@@ -256,7 +256,7 @@ export async function eraseTextGlyphs(imageData, opts = {}) {
     sampleMask: mask255From01(sample01),
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
   return rgbToImageData(out, H, W);
@@ -503,7 +503,7 @@ export async function erase(imageData, opts = {}) {
     sampleMask: mask255From01(sample01),
     direction: opts.direction ?? null,
     flatSpan: opts.flatSpan ?? 40,
-    flatTex: opts.flatTex ?? 15.0,
+    flatTex: opts.flatTex ?? 20.0,
     shouldCancel: normalizeCancel(opts.shouldCancel),
   });
 

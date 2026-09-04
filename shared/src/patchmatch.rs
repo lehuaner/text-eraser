@@ -52,11 +52,17 @@ fn pm_clamp(v: f32) -> f32 {
     }
 }
 
-fn pm_mulberry32(s: &mut u32) -> f32 {
-    *s ^= *s << 13;
-    *s ^= *s >> 17;
-    *s ^= *s << 5;
-    ((*s) as f32) / 4294967296.0f32
+/// mulberry32 PRNG —— 与浏览器 linalg.js 的 mulberry32、Python patch_fill._Mulberry32
+/// 逐位一致(f64 输出语义)。注意: 旧实现其实不是 mulberry32 而是 xorshift32,
+/// 且共享核所有调用点 seed=0 —— xorshift32 零状态恒输出 0, 随机候选池退化成
+/// 固定取 cand[0], 这是填充纹理与 Python 核心(真随机 PCG64)不一致的根源。
+fn pm_mulberry32(s: &mut u32) -> f64 {
+    *s = s.wrapping_add(0x6D2B79F5);
+    let mut t = *s;
+    t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+    t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61 | t));
+    let o = t ^ (t >> 14);
+    (o as f64) / 4294967296.0f64
 }
 
 fn pm_sobel(gray: &[f32], h: i32, w: i32, gx: &mut [f32], gy: &mut [f32]) {
@@ -225,10 +231,13 @@ fn pm_best_source(
 
     let tpatch = pm_gather(work, ty, tx, pw, ph, HALF, PP, PP3);
     // known positions in the target window (patch-flat indices)
+    // 注意: 必须 - HALF 使窗口以目标为中心(ty-3..ty+3), 与 pm_gather 一致;
+    // 此前漏减导致 known 蒙版采样窗口整体右下偏移, SSD 在错误的已知位置上
+    // 计算, 与 numpy 参照结构性不一致。
     let mut tkidx: Vec<usize> = Vec::new();
     for j in 0..PP {
-        let wy = ty + (j as i32 / (HALF * 2 + 1));
-        let wx = tx + (j as i32 % (HALF * 2 + 1));
+        let wy = ty + (j as i32 / (HALF * 2 + 1)) - HALF;
+        let wx = tx + (j as i32 % (HALF * 2 + 1)) - HALF;
         if wy >= 0 && wy < ph && wx >= 0 && wx < pw {
             let i = (wy * pw + wx) as usize;
             if known[i] != 0 {
@@ -281,14 +290,14 @@ fn pm_best_source(
         }
         if !any_line {
             for _ in 0..k {
-                let ci = ((pm_mulberry32(rng) * nc as f32) as usize).min(nc - 1);
+                let ci = ((pm_mulberry32(rng) * nc as f64) as usize).min(nc - 1);
                 pool_y.push(cand_y[ci]);
                 pool_x.push(cand_x[ci]);
             }
         }
     } else {
         for _ in 0..k {
-            let ci = ((pm_mulberry32(rng) * nc as f32) as usize).min(nc - 1);
+            let ci = ((pm_mulberry32(rng) * nc as f64) as usize).min(nc - 1);
             pool_y.push(cand_y[ci]);
             pool_x.push(cand_x[ci]);
         }
@@ -856,9 +865,13 @@ pub extern "C" fn patchmatch_inpaint(
     for i in 0..pn {
         grad[i] = (gx[i] * gx[i] + gy[i] * gy[i]).sqrt();
     }
+    // numpy 参照: Dmap = cv2.dilate(grad*known) 经 _shared_core.dilate shim,
+    // 输入先被 astype(np.uint8) 截断回绕(C 风格: 截断到整数再 mod 256), 再做
+    // 3x3 max。Rust 侧必须复刻同一量化, 否则优先级与排序顺序分歧。
     let mut gk = vec![0f32; pn];
     for i in 0..pn {
-        gk[i] = grad[i] * (known[i] as f32) / 255.0;
+        let v = grad[i] * (known[i] as f32) / 255.0;
+        gk[i] = ((v as i32) & 0xFF) as f32;
     }
     let mut dmap = vec![0f32; pn];
     pm_dilate_max3x3(&gk, &mut dmap, ph, pw);
@@ -1007,5 +1020,22 @@ pub extern "C" fn patchmatch_inpaint(
         }
     } else {
         pm_write_out(&work, h, w, pw, out_ptr);
+    }
+}
+
+#[cfg(test)]
+mod rng_tests {
+    #[test]
+    fn mulberry32_stream() {
+        let mut s: u32 = 0;
+        let mut out = Vec::new();
+        for _ in 0..4 {
+            s = s.wrapping_add(0x6D2B79F5);
+            let mut t = s;
+            t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+            t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(61 | t));
+            out.push(t ^ (t >> 14));
+        }
+        println!("RUST stream: {:?}", out);
     }
 }

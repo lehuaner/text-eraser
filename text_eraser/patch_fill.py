@@ -32,6 +32,36 @@ from text_eraser import _cv as cv2
 # Rust implementation the browser Worker runs → frontend/backend byte-identical fills.
 from text_eraser._shared_core import patchmatch_inpaint_fill, using_shared_core
 
+_M32 = 0xFFFFFFFF
+
+
+class _Mulberry32:
+    """填充引擎的规范随机流 —— 与 shared/src/patchmatch.rs pm_mulberry32、
+    browser/src/linalg.js mulberry32 逐位一致（f64 输出语义）。
+
+    这是「三端一致」的规范 PRNG：mulberry32 的状态更新是 a += 0x6D2B79F5 的
+    等差序列，故按 draw 次数整段向量化生成；候选下标映射与 Rust 完全一致：
+        ci = min(int(out * nc), nc - 1)   （out = u32 / 2**32, f64 截断）
+    注意：第 i 次 draw 的状态是 a0 + (i+1)*C（先自增再变换）。
+    """
+
+    def __init__(self, seed: int = 0):
+        self._a = int(seed) & _M32
+
+    def indices(self, count: int, nc: int) -> np.ndarray:
+        if count <= 0:
+            return np.empty(0, np.int64)
+        i = np.arange(1, count + 1, dtype=np.uint64)
+        a = (self._a + 0x6D2B79F5 * i) & np.uint64(_M32)
+        self._a = int((self._a + 0x6D2B79F5 * count) & _M32)
+        t = a
+        t = ((t ^ (t >> np.uint64(15))) * (t | np.uint64(1))) & np.uint64(_M32)
+        t = (t ^ (t + ((t ^ (t >> np.uint64(7))) * (np.uint64(61) | t))
+                  & np.uint64(_M32))) & np.uint64(_M32)
+        o = (t ^ (t >> np.uint64(14))) & np.uint64(_M32)
+        f = o.astype(np.float64) / 4294967296.0
+        return np.minimum((f * float(nc)).astype(np.int64), nc - 1)
+
 
 def _normalize_sample_mask(sample_mask, H, W):
     """把 sample_mask 统一成 HxW bool 数组；不支持的格式返回 None。
@@ -144,10 +174,13 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         # 仍保留 n>=2 边带检查(避免极小 mask 边带不足时误触发); span 检查
         # 移除——对真正光滑背景(span≈0)同样适用。纹理背景(tex>=flat_tex)
         # 仍走 patchmatch, 不损失纹理。
-        # 1:1 对齐(共享 wasm 方案): 装了 shared core 时, 平滑背景也走 wasm PatchMatch
-        # (与后端/前端同字节), 不再走 cv2 TELEA—— 否则三端填充结果不一致。
-        # 仅无 core 的纯 cv2 回退路径保留 TELEA 平滑渐变保真。
-        if tex < flat_tex and not using_shared_core():
+        # 平滑背景(环带纹理低 tex<flat_tex)一律用 cv2 TELEA 扩散填充——这与浏览器
+        # (patchmatch.js 走 opencv.js INPAINT_TELEA) 和 Python 核心(无 core 回退) 行为
+        # 一致, 是「三端一致」的 host 侧判定。Rust 共享核只负责非平滑纹理区的 PatchMatch
+        # 填充(下方 using_shared_core 分支 / 浏览器的 patchmatchInpaintShared)。此前此处
+        # 对 wasm 模式误跳过 TELEA、改走 Rust PatchMatch, 导致后端 wasm 与 Python 核心/
+        # 浏览器在平滑区填充内容不一致。
+        if tex < flat_tex:
             out = cv2.inpaint(np.clip(img, 0, 255).astype(np.uint8),
                               m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
             return out
@@ -206,6 +239,21 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
             img[y0:y1, x0:x1] = np.clip(_filled, 0, 255)
             return np.clip(img, 0, 255)[padm:padm + OH, padm:padm + OW].astype(np.uint8)
 
+    filled = _patch_fill_loop(sub, subm, subsm, direction, should_cancel)
+    if filled is None:
+        out = cv2.inpaint(img.astype(np.uint8), m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
+        return out[padm:padm + OH, padm:padm + OW]
+    img[y0:y1, x0:x1] = np.clip(filled, 0, 255)
+    return np.clip(img, 0, 255)[padm:padm + OH, padm:padm + OW].astype(np.uint8)
+
+def _patch_fill_loop(sub, subm, subsm, direction, should_cancel=None):
+    """在已裁剪的 ROI(sub) 上运行 PatchMatch 填充主循环，返回 filled(f32 HxWx3)。
+
+    inpaint() 的核心段；独立成函数以便与 shared/src/patchmatch.rs 的
+    patchmatch_inpaint 做逐字节孪生校验（numpy↔Rust 三端一致的基准实现）。
+    无候选源块时返回 None（调用方走 TELEA 兜底）。
+    """
+    sh, sw = sub.shape[:2]
     P = 7                        # 块大小(奇数)
     half = P // 2
     known = ~subm               # 已知区域(随填充扩张)
@@ -224,8 +272,7 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         cand_mask = cand_mask & subsm
     cand_y, cand_x = np.where(cand_mask)
     if cand_y.size == 0:
-        out = cv2.inpaint(img.astype(np.uint8), m.astype(np.uint8), 3, cv2.INPAINT_TELEA)
-        return out[padm:padm + OH, padm:padm + OW]
+        return None
 
     # ---- 方向填充模式预计算 ----
     # direction 非 None 时，_best_source 只沿过目标点的该角度直线取源候选，
@@ -254,7 +301,7 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
     nnf_set = np.zeros((sh, sw), bool)
 
     filled = sub.copy()
-    rng = np.random.default_rng(0)
+    rng = _Mulberry32(0)
     K = min(256, max(32, cand_y.size // 4))   # 每步随机候选数(随候选规模自适应)
 
     dy = np.arange(-half, half + 1)
@@ -287,12 +334,12 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
             pool_x = np.concatenate(line_x) if line_x else np.empty((0,), np.int64)
             # 整条线都还没已知点(极端情况)：退回随机候选
             if pool_y.size == 0:
-                ridx = rng.integers(0, cand_y.size, size=K)
+                ridx = rng.indices(K, cand_y.size)
                 pool_y = cand_y[ridx].astype(np.int64)
                 pool_x = cand_x[ridx].astype(np.int64)
         else:
             # 原 PatchMatch：随机候选
-            ridx = rng.integers(0, cand_y.size, size=K)
+            ridx = rng.indices(K, cand_y.size)
             pool_y = list(cand_y[ridx]); pool_x = list(cand_x[ridx])
 
         # 邻域相干：已填四邻域的源中心(结构延续)。方向模式下也保留，
@@ -314,9 +361,16 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         yy = np.clip(pool_y[:, None, None] + dy[None, :, None], 0, sh - 1)
         xx = np.clip(pool_x[:, None, None] + dx[None, None, :], 0, sw - 1)
         src = filled[yy, xx]
-        # 只在目标块「已知位置」上比较(洞位置不参与 SSD)
+        # 只在目标块「已知位置」上比较(洞位置不参与 SSD)。
+        # SSD 用显式顺序累加(f32, (p,q) C 序, 每位置三通道和为一项)——与 Rust
+        # 共享核 pm_best_source 的 tkidx 顺序累加逐位一致。np.einsum 的 SIMD
+        # 分块累加顺序不可跨端复刻, 故弃用; 掩码位置贡献精确 0, 不改变和。
         diff = (src - tpatch[None]) * tknown[..., None]
-        ssd = np.einsum('kpqc,kpqc->k', diff, diff)
+        ssd = np.zeros(diff.shape[0], np.float32)
+        for p_ in range(P):
+            for q_ in range(P):
+                d = diff[:, p_, q_, :]
+                ssd += d[:, 0] * d[:, 0] + d[:, 1] * d[:, 1] + d[:, 2] * d[:, 2]
         bi = int(np.argmin(ssd))
         return int(pool_y[bi]), int(pool_x[bi])
 
@@ -383,14 +437,16 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
             priority = Cmap * Dmap
             priority[~boundary] = -1.0
             b_y, b_x = np.where(boundary)
-            order = np.argsort(-priority[b_y, b_x])
+            # kind='stable'：平局按行主序处理 —— 与 Rust order.sort_by(稳定排序)
+            # 的平局顺序一致（三端一致的规范语义）。
+            order = np.argsort(-priority[b_y, b_x], kind="stable")
             b_y = b_y[order]; b_x = b_x[order]
             for c0 in range(0, len(b_y), CHUNK):
                 c1 = min(c0 + CHUNK, len(b_y))
                 cy, cx = b_y[c0:c1], b_x[c0:c1]
                 # 批量随机候选
                 n = len(cy)
-                ridx = rng.integers(0, cand_y.size, size=(n, K))
+                ridx = rng.indices(n * K, cand_y.size).reshape(n, K)
                 pool_y = cand_y[ridx].astype(np.int64)   # (n,K)
                 pool_x = cand_x[ridx].astype(np.int64)
                 # 邻域相干：有效邻居的 nnf 源中心
@@ -414,24 +470,40 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
                         pool_y = np.concatenate([pool_y, py_e], 1)
                         pool_x = np.concatenate([pool_x, px_e], 1)
                 # gather 候选源块 (n,Kc,P,P,C)
+                # 注意: xx 的 dx 必须落在「列」轴上(与 yy 的 dy「行」轴正交),
+                # 才能取到完整 P×P 邻域。此前 xx/txx 的 dx 误与 yy/tyy 同轴,
+                # 每候选只取到 7 个对角线样本(einsum 容忍退化形状, bug 长期
+                # 潜伏), SSD 严重欠采样、与方向模式/Rust 共享核结构不一致。
                 yy = np.clip(pool_y[:, :, None, None] + dy[None, None, :, None], 0, sh - 1)
-                xx = np.clip(pool_x[:, :, None, None] + dx[None, None, :, None], 0, sw - 1)
+                xx = np.clip(pool_x[:, :, None, None] + dx[None, None, None, :], 0, sw - 1)
                 src = filled[yy, xx]
                 tyy = np.clip(cy[:, None, None] + dy[None, :, None], 0, sh - 1)
-                txx = np.clip(cx[:, None, None] + dx[None, :, None], 0, sw - 1)
+                txx = np.clip(cx[:, None, None] + dx[None, None, :], 0, sw - 1)
                 tpatch = filled[tyy, txx]                       # (n,P,P,C)
                 tkn = known[tyy, txx]                           # (n,P,P)
                 diff = (src - tpatch[:, None]) * tkn[:, None, ..., None]
-                ssd = np.einsum('nkpqc,nkpqc->nk', diff, diff)
+                # SSD 显式顺序累加(f32, (p,q) C 序, 每位置三通道和为一项)——与
+                # Rust 共享核 pm_best_source 的 tkidx 顺序累加逐位一致。np.einsum
+                # 的 SIMD 分块累加顺序不可跨端复刻, 故弃用; 掩码位置贡献精确 0。
+                ssd = np.zeros(diff.shape[:2], np.float32)
+                for p_ in range(P):
+                    for q_ in range(P):
+                        d = diff[:, :, p_, q_, :]
+                        ssd += d[:, :, 0] * d[:, :, 0] + \
+                            d[:, :, 1] * d[:, :, 1] + d[:, :, 2] * d[:, :, 2]
                 # 均值兼容惩罚: 弱约束边界块(已知像素少)的 SSD 区分度低, 异色区
                 # 亮源块能凭几个已知像素胜出 → 填充边界白块(1787980309628)。
                 # 把「源块均值 vs 目标块已知均值」的差按已知像素数记入 SSD ——
                 # 相当于假设全部块像素都该有此量级的差; 合法结构延续的均值
                 # 本来就与局部相近, 罚分可忽略。
-                tkn_sum = np.clip(tkn.sum((1, 2)), 1.0, None)
-                tmean = (tpatch * tkn[..., None]).sum((1, 2)) / tkn_sum[..., None]
+                # 全链路保持 f32(此前 tkn_sum 为 int64 会把整条惩罚链提升到
+                # float64, 不可复刻), 与 Rust 逐位一致。
+                tkn_sum = np.clip(
+                    tkn.sum((1, 2), dtype=np.float32), np.float32(1.0), None)
+                tmean = (tpatch * tkn[..., None]).sum((1, 2), dtype=np.float32) / \
+                    tkn_sum[..., None]
                 smean = src.mean((2, 3))                       # (n,K,C)
-                ssd = ssd + 4.0 * tkn_sum[:, None] * \
+                ssd = ssd + np.float32(4.0) * tkn_sum[:, None] * \
                     ((smean - tmean[:, None, :]) ** 2).sum(-1)
                 bi = np.argmin(ssd, 1)
                 sy = pool_y[np.arange(n), bi]
@@ -463,6 +535,4 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
     if hole.any():
         sub8 = np.clip(filled, 0, 255).astype(np.uint8)
         filled = cv2.inpaint(sub8, hole.astype(np.uint8), 3, cv2.INPAINT_TELEA)
-
-    img[y0:y1, x0:x1] = np.clip(filled, 0, 255)
-    return np.clip(img, 0, 255)[padm:padm + OH, padm:padm + OW].astype(np.uint8)
+    return filled

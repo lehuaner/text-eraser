@@ -10,10 +10,12 @@ from __future__ import annotations
 import io
 import hashlib
 import json
+import logging
 import mimetypes
 import os
 import shutil
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Browsers refuse to execute module scripts / Workers served as text/plain.
@@ -35,9 +37,42 @@ from text_eraser.eraser import erase_text
 # what the UI's「使用 Python 核心」switch sends as use_python_core=true.
 from text_eraser._shared_core import python_core, using_shared_core
 
+logger = logging.getLogger(__name__)
+
 _PACKAGE_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PACKAGE_DIR.parent
 STATIC_DIR = _PACKAGE_DIR / "static"
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    # Best-effort: make sure the "本地浏览器计算" assets (opencv.js, onnxruntime-web,
+    # DBNet model, bundled pipeline) are present before the first request. They are
+    # large 3rd-party artifacts that are NOT committed (see .gitignore), so we
+    # download/copy them once on boot. Run in a background thread so an offline box
+    # never stalls server boot. On failure we log; the toggle then surfaces a clear
+    # error instead of the worker hanging 15s.
+    import asyncio
+
+    async def _bootstrap():
+        try:
+            from text_eraser._browser_assets import ensure_browser_assets
+
+            res = await asyncio.to_thread(ensure_browser_assets)
+            missing = [k for k, v in res.items() if v.startswith("error")]
+            if missing:
+                logger.warning("[browser-assets] 缺失/不可用: %s（离线或网络受限；"
+                               "本地浏览器计算将不可用，可改用后端计算）", missing)
+            else:
+                logger.info("[browser-assets] 浏览器计算资源已就绪")
+        except Exception as e:  # never block boot on asset issues
+            logger.warning("[browser-assets] 准备失败（已忽略，不影响后端计算）: %s", e)
+
+    task = asyncio.create_task(_bootstrap())
+    try:
+        yield
+    finally:
+        task.cancel()
 
 
 def _env_first(*names: str) -> str:
@@ -65,7 +100,7 @@ def _default_data_dir() -> Path:
 DATA_DIR = _default_data_dir()
 HISTORY_DIR = DATA_DIR / "history"
 
-app = FastAPI(title="TextEraser", version=__version__)
+app = FastAPI(title="TextEraser", version=__version__, lifespan=_lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +133,9 @@ async def _add_cross_origin_isolation(request, call_next):
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # serve the pure-browser ESM port so the web UI can run algorithms client-side
-# (the "本地浏览器计算" toggle loads /browser/src/index.js + opencv.js from CDN)
+# (the "本地浏览器计算" toggle loads /browser/dist/te-bundle.js + opencv.js +
+#  onnxruntime-web + DBNet model, all auto-bootstrapped into browser/vendor &
+#  browser/dist by text_eraser._browser_assets on startup)
 _BROWSER_DIR = _REPO_ROOT / "browser"
 if _BROWSER_DIR.is_dir():
     app.mount("/browser", StaticFiles(directory=str(_BROWSER_DIR)), name="browser")
@@ -121,6 +158,14 @@ async def index():
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "version": __version__, "ts": int(time.time())}
+
+
+@app.get("/api/browser-assets")
+async def browser_assets():
+    """浏览器计算所需资源是否已就位（供前端在开启「本地浏览器计算」前判断）。"""
+    from text_eraser._browser_assets import browser_assets_status
+
+    return browser_assets_status()
 
 
 @app.get("/api/example.png")
