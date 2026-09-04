@@ -351,7 +351,6 @@ async def erase(
     direction: float = Form(None),
     edge_aware: bool = Form(False),
     return_overlay: bool = Form(True),
-    glow_mode: str = Form("auto"),
     deglow_strength: float = Form(1.0),
     deglow_green_thr: float = Form(6.0),
     deglow_range: int = Form(24),
@@ -404,7 +403,6 @@ async def erase(
             max_box_ratio=max_box_ratio,
             direction=direction,
             edge_aware=edge_aware,
-            glow_mode=glow_mode,
             deglow_strength=deglow_strength,
             deglow_green_thr=deglow_green_thr,
             deglow_range=deglow_range,
@@ -442,7 +440,6 @@ async def erase(
         "edge_used": meta.get("edge_used", edge),
         "auto_edge": meta.get("auto_edge", False),
         "cfg": {
-            "glow_mode": glow_mode,
             "deglow_scheme": deglow_scheme,
             "deglow_strength": deglow_strength,
             "deglow_green_thr": deglow_green_thr,

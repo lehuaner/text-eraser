@@ -79,7 +79,7 @@ def test_deglow_v2_large_zone_no_red_dominance():
     被压到 G<max(R,B) → R 主导 → 填充呈暗红。本测试构造 zone≈100% 的合成
     绿光图, 断言去发光后 R-G ≤ 1(中性感), 抓回退。
     """
-    from text_eraser.text_select import _deglow_full_green_v2
+    from text_eraser._shared_core import deglow_full_green_v2 as _sc_deglow_v2
     # 90x90: 整片绿光(R=35,G=120,B=30, R!=B 模拟真实背景微暖) + 中心白字。
     # strong_green 覆盖全图 → zone≈100% → 走不到「背景场重建」分支,
     # 这是过冲残留的精确放大版。
@@ -90,9 +90,9 @@ def test_deglow_v2_large_zone_no_red_dominance():
     tmask = np.zeros((H, W), np.uint8)
     tmask[35:55, 35:55] = 255
 
-    clean, _core, _zone = _deglow_full_green_v2(
+    clean, _core, _zone = _sc_deglow_v2(
         rgb, tmask, strength=1.15, zone_ratio=0.6, zone_expand=10,
-        protect_px=1, deglow_chroma_keep=True, return_zone=True)
+        protect_px=1, chroma_keep=1)
 
     # 绿光本体(非白字)的 R-G 必须中性和(允许 ±1 噪声)。
     body = np.ones((H, W), bool)

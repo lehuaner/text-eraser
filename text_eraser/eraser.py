@@ -1,31 +1,31 @@
 """
 文字擦除: DBNet → mask 2px 椭圆膨胀 → patch_fill(sample_mask=整图-mask) → 出图
 
+0.3.0 架构（wasm 单核）:
+  - 去发光/填充算法只有一份实现: textcore.wasm（与浏览器 Worker 同一份，逐字节
+    一致）。原 Python 核心通道法(auto/autov1.1/deglow_first)、v4 实验方案与 numpy
+    PatchMatch 已随 0.3.0 删除 —— 见 README「迁移 0.2.x → 0.3.0」。
+  - 后端保留的 Python 职责: DBNet 文字检测(onnxruntime)、蒙版修复编排、取样剔除、
+    透明度扩展(soft_expand)、auto_edge 判定 —— 均为编排逻辑，非核心算法。
+
 设计原则:
-- 只做 patchmatch, 不做 TELEA / 颜色匹配. 后两者会破坏纹理造成"糊一团".
+- 只做 patchmatch, 不做 TELE / 颜色匹配. 后两者会破坏纹理造成"糊一团".
+  (平滑渐变背景例外: 由 wasm pm_smooth_telea_full 权威判定并填充.)
 - mask 2px 膨胀是必须的: 吃掉字形抗锯齿边缘, 否则 SSD 比较时这些 AA
   像素会被当成"已知上下文"污染 patchmatch 结果 (Δmean 30→0.1).
 - sample_mask = 整图 - 文字mask: 强制 patchmatch 不在文字区取样.
-
-参数选择证据 (在 needExtractAndPatch.png 305x150 上):
-  dil=0 → Δ=30  ghost=572
-  dil=1 → Δ=5.6 ghost=29
-  dil=2 → Δ=0.1 ghost=0   ← 选这个
-  dil=3 → Δ=0.7 ghost=0
-  dil=4 → Δ=2.7 ghost=0
 """
 from __future__ import annotations
+import os
 import time
 import numpy as np
 # Shared-algorithm-core cv2 shim: routes dilate/erode/morphologyEx/connectedComponents/
 # cvtColor(RGB2GRAY) through textcore.wasm (same operators the browser runs) and falls
-# through to the real cv2 for everything else. Keeps the backend + browser parity.
+# through to the real cv2 for everything else (LAB/Sobel 等检测链算子).
 from text_eraser import _cv as cv2
 from text_eraser import _shared_core
 
-from text_eraser.text_select import (detect_text_mask, _deglow_faint_green,
-                              _deglow_faint_green_v11, _deglow_full_green,
-                              _deglow_full_green_v2, _fill_bright_near_mask,
+from text_eraser.text_select import (detect_text_mask, _fill_bright_near_mask,
                               _absorb_zone_bright_core)
 from text_eraser.patch_fill import inpaint as pm_inpaint
 
@@ -73,79 +73,39 @@ def _erase_once(
     tint_fill: bool = True,
     fill_white: bool = True,
     fill_max_dist: int = 12,
-    glow_mode: str = "auto",
     deglow_strength: float = 1.0,
-    deglow_green_thr: float = 6.0,
-    deglow_range: int = 24,
-    deglow_glo: float = 85.0,
-    deglow_protect: float = 1.0,
     deglow_mask_soft: float = 0.0,
     deglow_zone_ratio: float = 0.6,
     deglow_zone_expand: int = 10,
     deglow_protect_px: int = 1,
     deglow_chroma_keep: bool = True,
     deglow_scheme: str = "v2",
+    tmask_hint: np.ndarray | None = None,
 ):
-    """最小化文字擦除管线.
+    """最小化文字擦除管线（wasm 单核版）.
 
     Args:
         rgb: HxWx3 uint8 RGB 图像
         edge: 「移动边缘」—— 蒙版(展示)与**填充区域**同步外扩/收缩
             (正=扩, 0=仅取 Otsu 字形不扩不缩, 负=收缩选区)。默认 1: 在 Otsu 字形
-            基础上椭圆膨胀 1px, 刚好吸收字形 AA 抗锯齿边缘; 要回到 eoff 行为设 2。
+            基础上椭圆膨胀 1px, 刚好吸收字形 AA 抗锯齿边缘。
         q_off: 传给 detect_text_mask, [30,70], 越高 mask 越贴字形
         max_area_ratio: 传给 detect_text_mask, 给单字粘连大块放行
         ml_max_side: DBNet 推理尺度
-        edge_aware: 默认 False. 历史版本用 ellipse(8) 试图吞 AA 边缘, 但会把
-            mask 膨胀到占图 60%+, 反而让 patch_fill sample 区不够、产生更多
-            白/红残留; 现在默认关掉, 只用 edge=2 就足够.
+        edge_aware: 默认 False. 历史 ellipse(8) 方案会把 mask 膨胀到占图 60%+;
+            现默认关掉, edge=1 已足够。
         return_mask: True 时返回 (result, mask, meta), 否则 (result, meta)
         tint_fill: True 时启用色偏区域生长(_grow_color_tint, 红蒙版叠加/淡绿光晕
-            自动并入蒙版)。False 则不做色偏生长(发光仍可由 glow_mode 处理)。
-        fill_white: True 时启用「临近纯白补全」(_fill_nearby_white)，把紧邻蒙版的
-            亮白/抗锯齿像素并入蒙版，修复描边字漏白。False 则跳过该步，蒙版回到
-            纯 Otsu(近似早期 eoff 行为) —— 小张图的非文字浅色区/衣物高光不再被
-            误锁进填充蒙版。默认 True 保持现状；要"回到之前"时关掉它 +
-            edge=2 + glow_mode="off"(关 tint) 即可。
-        fill_max_dist: fill_nearby_white 「孤立纯白段」步骤的最大吞并距离(px)。
-            默认 12。字符白边/AA 通常 <8px(由 AA 尾部外推兜住),12 足够覆盖;
-            调小更保守(只吃紧邻白段),调大更激进(可能误吞远处亮光斑)。
-            换装.png 实测默认 32 会把顶部 31px 远的光斑误锁 497px 进蒙版,
-            调到 12 干净。0 = 关闭此步(只保留连通白段与 AA 尾部外推)。
-        glow_mode: 发光处理策略（在「去发光方案=通道法」时生效）
-            "auto" (默认)   — A+B 混合：强光晕并入蒙版填充(B) + 弱光晕边缘
-                              通道法去发光(A)。
-            "autov1.1"      — A+B 混合 + 范围补齐：与 auto 完全同语义, 仅把
-                              A 路径的固定 near_r 圈换成「绿|比背景亮」连通生长,
-                              淡绿渐隐边缘(超出固定圈的光晕)不再漏掉。
-            "deglow_first"  — 实验性：先用通道法把整片绿光晕从图中去除(先去除
-                              发光)，再在干净图上检测文字蒙版并填充(再去除文字)。
-            "off"           — 完全关闭发光处理，行为回到发光改造前。
-        deglow_strength: [0,1] 去发光力度。0=不去除发光颜色，1=完全去除(默认)。
-            通道法与 v4 通用方案共用此语义。
-        deglow_green_thr: 绿检出阈值(通道法 auto/autov1.1 弱区判定用,
-            g − max(R,B) 超过该值才视为淡绿光晕)。默认 6(只处理明显偏绿);
-            调小(如 3)可把更淡的绿边缘也拉净 → 减少绿色溢出; 调大则更保守。
-        deglow_range: 去发光作用半径(px, 通道法 auto 的 A 路径 near_r, v1.1 的
-            固定圈)。默认 24; 调大(如 40~60)覆盖更远的光晕残迹, 调小更收敛。
-            对 v4 方案不生效。
-        deglow_glo: 弱绿像素的最低亮度(G 通道下限 g_lo, 默认 85)。只有当
-            绿像素亮度超过该值才被当作"光晕"处理; 溢出时调低(如 60~70)可把
-            更暗的残绿也拉净, 调高则更保守。
-        deglow_protect: 白字/文字边缘保护强度 [0,1], 默认 1(完全保护, 现有
-            行为)。保护会跳过亮白像素(文字及 AA 边)不去发光, 防文字被"吹胖";
-            若文字周围仍有残绿, 可降到 0.5~0 减少保护、多去绿(可能轻度伤文字
-            AA 边)。
-        deglow_mask_soft: 蒙版「透明度扩展」半径(px, 默认 0=关)。>0 时在真实
-            填充区外扩展一圈软带：软带内缘完全填充、外缘回归原始(按距离衰减
-            渐变混合) → 扩大覆盖范围的同时保留底层纹理不整块覆盖。红蒙版会以
-            半透明显示该软带。适合"光晕没被吞进蒙版"的截图类图(如 deglow_first
-            优于 auto 的场景)。
-        deglow_scheme: 去发光方案（前端「去发光方案」下拉）
-            "channel" (默认) — 现有通道法（绿光晕专用），由 glow_mode 控制流程。
-            "v4"              — v4.1 通用方案(deglow 包)：自动辨识
-                                  blend/additive/screen 三模式 + 反演/重建/溯源。
-            "off"             — 关闭所有去发光（等价于 glow_mode="off"）。
+            自动并入蒙版)。False 则不做色偏生长。
+        fill_white: True 时启用「临近纯白补全」，把紧邻蒙版的亮白/抗锯齿像素并入
+            蒙版，修复描边字漏白。
+        fill_max_dist: fill_nearby_white 「孤立纯白段」步骤的最大吞并距离(px)。0=关闭。
+        deglow_scheme: 去发光方案
+            "v2"   (默认) — 减绿度去发光(wasm) → 去发光图上再检测 → wasm 填充。
+            "off"       — 关闭所有去发光。
+        deglow_*: v2 减绿度参数（语义见 erase_text）。
+        tmask_hint: 调用方已算好的原图文字蒙版（如 auto_edge 判定时的检测结果），
+            传入可跳过重复 DBNet 推理（并发/性能优化）。
     Returns:
         result: HxWx3 uint8 RGB 已擦除文字的图片
         mask:   HxW uint8 (255=将被填充的区域[移动边缘 edge 后])  仅当 return_mask=True
@@ -155,60 +115,8 @@ def _erase_once(
         rgb = rgb.astype(np.uint8)
     t0 = time.time()
 
-    # 方案=off 或 v4 → 覆盖面优先级高于 glow_mode 细节
-    if deglow_scheme == "off":
-        glow_mode_eff = "off"
-    elif deglow_scheme == "v4":
-        return _erase_v4_deglow(
-            rgb, edge=edge, q_off=q_off,
-            max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-            ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware,
-            return_mask=return_mask, fill_white=fill_white,
-            fill_max_dist=fill_max_dist,
-            deglow_strength=deglow_strength,
-            glow_mode=glow_mode,
-        )
-    else:
-        glow_mode_eff = glow_mode
-
-    # 通道法发光旋钮: 绿检出阈值 / 作用范围(自动钳制到安全区间)
-    gthr = float(max(0.5, min(deglow_green_thr, 20.0)))
-    grange = int(max(0, min(deglow_range, 200)))
-    glo = float(max(40.0, min(deglow_glo, 160.0)))
-    gprot = float(max(0.0, min(deglow_protect, 1.0)))
-    msoft = float(max(0.0, min(deglow_mask_soft, 150.0)))
-
-    # auto v1.1: A+B 混合 + 范围补齐 + 弱区纹理保留
-    if glow_mode_eff == "autov1.1":
-        return _erase_auto_v11(
-            rgb, edge=edge, q_off=q_off,
-            max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-            ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware,
-            return_mask=return_mask, fill_white=fill_white,
-            fill_max_dist=fill_max_dist,
-            deglow_strength=deglow_strength,
-            tint_fill=tint_fill, deglow_green_thr=gthr, deglow_range=grange,
-            deglow_glo=glo, deglow_protect=gprot, soft_expand=msoft,
-        )
-
-    # 实验性: 先去发光再去字
-    if glow_mode_eff == "deglow_first":
-        return _erase_deglow_first(
-            rgb, edge=edge, q_off=q_off,
-            max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-            ml_max_side=ml_max_side, direction=direction,
-            edge_aware=edge_aware,
-            return_mask=return_mask, fill_white=fill_white,
-            fill_max_dist=fill_max_dist,
-            deglow_strength=deglow_strength,
-            soft_expand=msoft,
-        )
-
-    # 原型 v2: 先减绿度去发光 → 再对 clean 走普通去字算法(详见 _erase_deglow_v2)
     if deglow_scheme == "v2":
-        # v2 减绿度允许略过冲(上限1.5)以彻底去净淡绿残迹; 其他方案 strength 内部钳到1.0, 不受影响
+        # v2 减绿度允许略过冲(上限1.5)以彻底去净淡绿残迹
         return _erase_deglow_v2(
             rgb, edge=edge, q_off=q_off,
             max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
@@ -217,21 +125,24 @@ def _erase_once(
             return_mask=return_mask, fill_white=fill_white,
             fill_max_dist=fill_max_dist,
             deglow_strength=max(float(deglow_strength), 1.15),
-            alpha_core=0.65,
             deglow_zone_ratio=deglow_zone_ratio,
             deglow_zone_expand=deglow_zone_expand,
             deglow_protect_px=deglow_protect_px,
             deglow_chroma_keep=deglow_chroma_keep,
-            soft_expand=msoft,
+            soft_expand=float(max(0.0, min(deglow_mask_soft, 150.0))),
+            tmask_hint=tmask_hint,
         )
+    if deglow_scheme != "off":
+        raise ValueError(
+            f"deglow_scheme={deglow_scheme!r} 不支持；0.3.0 仅支持 'v2'(默认) 与 'off'")
 
-    use_tint = tint_fill and (glow_mode_eff != "off")
+    # ---- scheme="off": 不去发光，检测 → 填充 ----
     mask, boxes = detect_text_mask(
         rgb, method="ml", q_off=q_off,
         max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=use_tint, fill_white=fill_white,
+        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
         fill_max_dist=fill_max_dist,
-    )
+    ) if tmask_hint is None else (tmask_hint, _mask_to_boxes(tmask_hint))
 
     if not mask.any():
         out = (rgb, mask, {"mask_pix": 0, "inpaint_seconds": 0.0,
@@ -240,22 +151,16 @@ def _erase_once(
                           "method": "ml", "boxes": []})
         return out
 
-    # 0b. 弱绿光晕边缘通道法去发光(A)：在蒙版外围把淡绿渐隐边缘还原成背景，
-    #     使最终填充结果不残留光晕。强光晕已由 detect_text_mask 并入蒙版填充。
-    #     仅 glow_mode_eff != "off" 时启用；力度受 deglow_strength 控制。
-    sample_exclude = None
-    if glow_mode_eff != "off":
-        rgb, _ = _deglow_faint_green(rgb, mask, thr=gthr, near_r=grange,
-                                     g_lo=glo, text_protect=gprot,
-                                     strength=deglow_strength)
-        # 填充取样时排除残余绿(未完全去净的发光边缘)，防止把绿复制进文字区
-        sample_exclude = _residual_green(rgb, mask)
-
-    # 1~3. 共用填充步骤
     return _run_fill(rgb, mask, boxes, edge=edge, direction=direction,
                      edge_aware=edge_aware,
-                     return_mask=return_mask, t0=t0, sample_exclude=sample_exclude,
-                     soft_expand=msoft)
+                     return_mask=return_mask, t0=t0, sample_exclude=None,
+                     soft_expand=float(max(0.0, min(deglow_mask_soft, 150.0))))
+
+
+def _mask_to_boxes(mask: np.ndarray) -> list:
+    """从蒙版粗略提取外接框列表（tmask_hint 复用路径用；框仅作 meta 展示）。"""
+    from text_eraser.text_select import _mask_to_boxes as _m2b
+    return _m2b(mask)
 
 
 def erase_text(
@@ -274,7 +179,6 @@ def erase_text(
     tint_fill: bool = True,
     fill_white: bool = True,
     fill_max_dist: int = 12,
-    glow_mode: str = "auto",
     deglow_strength: float = 1.0,
     deglow_green_thr: float = 6.0,
     deglow_range: int = 24,
@@ -287,7 +191,15 @@ def erase_text(
     deglow_chroma_keep: bool = True,
     deglow_scheme: str = "v2",
 ):
-    """文字擦除入口。
+    """文字擦除入口（后端引擎，wasm 单核）。
+
+    0.3.0 变更: 移除 ``glow_mode``（通道法及全部 Python 去发光变体已删除）；
+    ``deglow_scheme`` 仅支持 "v2"(默认) / "off"。算法执行位置：
+      - 后端引擎 = 本函数（Python 进程内经 wasmtime 调 textcore.wasm）；
+      - 浏览器引擎 = `text-eraser-browser` ESM 包（browser/src/index.js 的
+        ``erase()`` / ``eraseTextGlyphs()``），两端共用同一份 wasm，逐字节一致；
+        自定义管线可用 ``text_eraser.core``（后端）或
+        ``import { ... } from 'text-eraser-browser'``（浏览器）自由编排。
 
     auto_edge=True 时，先按原图文字蒙版外围的「文字色残留」逐环判定所需的最小
     移动边缘 edge（默认从 ``edge`` 起，至多 ``auto_max_edge``），再走普通管线。
@@ -303,9 +215,7 @@ def erase_text(
             direction=direction, edge_aware=edge_aware,
             return_mask=return_mask, tint_fill=tint_fill,
             fill_white=fill_white, fill_max_dist=fill_max_dist,
-            glow_mode=glow_mode, deglow_strength=deglow_strength,
-            deglow_green_thr=deglow_green_thr, deglow_range=deglow_range,
-            deglow_glo=deglow_glo, deglow_protect=deglow_protect,
+            deglow_strength=deglow_strength,
             deglow_mask_soft=deglow_mask_soft,
             deglow_zone_ratio=deglow_zone_ratio,
             deglow_zone_expand=deglow_zone_expand,
@@ -313,15 +223,16 @@ def erase_text(
             deglow_chroma_keep=deglow_chroma_keep,
             deglow_scheme=deglow_scheme)
 
+    # 兼容参数: deglow_green_thr / deglow_range / deglow_glo / deglow_protect 是
+    # 0.2.x 通道法旋钮, 0.3.0 起通道法已删除、v2 不使用 —— 仅为 API 兼容保留在
+    # 签名中, 传入会被忽略(不报错, 便于旧调用方平滑升级)。
     return _erase_once(
         rgb, edge=edge, q_off=q_off, max_area_ratio=max_area_ratio,
         max_box_ratio=max_box_ratio, ml_max_side=ml_max_side,
         direction=direction, edge_aware=edge_aware,
         return_mask=return_mask, tint_fill=tint_fill,
         fill_white=fill_white, fill_max_dist=fill_max_dist,
-        glow_mode=glow_mode, deglow_strength=deglow_strength,
-        deglow_green_thr=deglow_green_thr, deglow_range=deglow_range,
-        deglow_glo=deglow_glo, deglow_protect=deglow_protect,
+        deglow_strength=deglow_strength,
         deglow_mask_soft=deglow_mask_soft,
         deglow_zone_ratio=deglow_zone_ratio,
         deglow_zone_expand=deglow_zone_expand,
@@ -331,20 +242,26 @@ def erase_text(
 
 
 def _erase_auto(rgb, *, edge, auto_max_edge, return_mask, **kw):
-    """auto_edge 内部：先判定实际 edge，再走 _erase_once，并在 meta 标注。"""
+    """auto_edge 内部：先判定实际 edge，再走 _erase_once，并在 meta 标注。
+
+    并发优化: 判定所需的原图检测蒙版与 v2 管线第一步完全同参，这里检测一次后
+    经 ``tmask_hint`` 传下去，省掉一次 DBNet 推理（大图 detect≈1.8s/次）。
+    """
     det_kw = dict(
         method="ml", q_off=kw["q_off"],
         max_area_ratio=kw["max_area_ratio"], max_box_ratio=kw["max_box_ratio"],
-        max_side=kw["ml_max_side"], tint_fill=kw["tint_fill"],
+        max_side=kw["ml_max_side"], tint_fill=False,
         fill_white=kw["fill_white"], fill_max_dist=kw["fill_max_dist"])
     tmask, _ = detect_text_mask(rgb, **det_kw)
     chosen = edge
     if tmask.any():
         chosen = _decide_edge(rgb, tmask, preferred=edge, max_edge=auto_max_edge)
     if return_mask:
-        result, mask_filled, meta = _erase_once(rgb, edge=chosen, return_mask=True, **kw)
+        result, mask_filled, meta = _erase_once(rgb, edge=chosen, return_mask=True,
+                                                tmask_hint=tmask, **kw)
     else:
-        result, meta = _erase_once(rgb, edge=chosen, return_mask=False, **kw)
+        result, meta = _erase_once(rgb, edge=chosen, return_mask=False,
+                                   tmask_hint=tmask, **kw)
     meta["auto_edge"] = True
     meta["edge_used"] = chosen
     if return_mask:
@@ -399,67 +316,6 @@ def _ring_dirty(lab, text_lab, bg_lab, grad, mask, radius: int) -> bool:
     return blend > 50 or gmean > 140
 
 
-def _erase_auto_v11(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
-                    ml_max_side, direction, edge_aware,
-                    return_mask, fill_white: bool = True,
-                    fill_max_dist: int = 12,
-                    deglow_strength=1.0, tint_fill=True,
-                    deglow_green_thr=6.0, deglow_range=24,
-                    deglow_glo=85.0, deglow_protect=1.0,
-                    soft_expand: float = 0.0):
-    """auto v1.1(保守版)：A+B 混合 + 仅补光晕范围。
-
-    与 auto 的差异全部收敛在 _deglow_faint_green_v11：
-      仅把 A 路径的固定 near_r 圈换成「绿|比背景亮」连通生长 —— 淡绿渐隐
-      边缘(超出固定圈的光晕)被完整覆盖，范围不再偏小。
-      weak 判定/文字保护/背景拉平/取样剔除等语义与 auto 完全一致，
-      不引入紫/杂色、不改变绿残留水平。
-    路径顺序与 auto 一致：检测基础文字蒙版(不含色偏生长) → v1.1 去发光
-    (强区并入蒙版) → 填充。
-    """
-    t0 = time.time()
-
-    # 1) 基础文字蒙版(色偏生长由 _deglow_faint_green_v11 按需并入)
-    tmask, boxes = detect_text_mask(
-        rgb, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
-    if not tmask.any():
-        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
-                "method": "ml", "boxes": []}
-        return (rgb, tmask, meta) if return_mask else (rgb, meta)
-
-    # 2) v1.1 去发光：返回(去发光图, 强区并入蒙版, 统计)
-    clean, add_mask, dstats = _deglow_faint_green_v11(
-        rgb, tmask, strength=deglow_strength, tint_fill=tint_fill,
-        thr=deglow_green_thr, near_r=deglow_range,
-        g_lo=deglow_glo, text_protect=deglow_protect)
-
-    # 3) 填充蒙版 = 基础蒙版 ∪ 强光晕区；取样剔除残余绿
-    mask = tmask
-    if add_mask.any():
-        mask = cv2.bitwise_or(mask, add_mask)
-    sample_exclude = _residual_green(clean, mask)
-
-    # 4~6. 共用填充步骤
-    if return_mask:
-        result, mask_filled, meta = _run_fill(
-            clean, mask, boxes, edge=edge, direction=direction,
-            edge_aware=edge_aware,
-            return_mask=True, t0=t0, sample_exclude=sample_exclude,
-            soft_expand=soft_expand)
-    else:
-        result, meta = _run_fill(
-            clean, mask, boxes, edge=edge, direction=direction,
-            edge_aware=edge_aware,
-            return_mask=False, t0=t0, sample_exclude=sample_exclude,
-            soft_expand=soft_expand)
-    meta["deglow_v11"] = dstats
-    return (result, mask_filled, meta) if return_mask else (result, meta)
-
-
 def _residual_green(rgb: np.ndarray, mask: np.ndarray,
                     radius: int = 48, thr: int = 8,
                     g_lo: int = 90) -> np.ndarray:
@@ -505,7 +361,7 @@ def _dark_source_exclude(clean: np.ndarray, mask: np.ndarray,
 def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
               return_mask, t0, sample_exclude=None,
               soft_expand: float = 0.0):
-    """共用填充步骤：膨胀 mask → sample → patch_fill → meta。
+    """共用填充步骤：膨胀 mask → sample → patch_fill(wasm) → meta。
 
     sample_exclude: 可选 bool mask(HxW)，这些像素从取样区剔除(不参与复制)。
         用于发光处理时剔除残余绿色像素，避免填充把绿复制进文字区(泛绿/尿渍)。
@@ -534,7 +390,7 @@ def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
     if sample_exclude is not None:
         sample_mask[sample_exclude] = 0
 
-    # 3. patch_fill (单步); direction 非空时启用方向填充
+    # 3. patch_fill (wasm 共享核; direction 非空时启用方向填充)
     result = pm_inpaint(rgb, mask_filled, sample_mask=sample_mask, direction=direction)
 
     # 3b. 透明度扩展: 在填充区外围做一层渐变混合带(扩覆盖、保留纹理)
@@ -584,62 +440,31 @@ def _run_fill(rgb, mask, boxes, *, edge, direction, edge_aware,
     return result, meta
 
 
-def _erase_deglow_first(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
-                        ml_max_side, direction, edge_aware,
-                        return_mask, fill_white: bool = True,
-                        fill_max_dist: int = 12,
-                        deglow_strength=1.0,
-                        soft_expand: float = 0.0):
-    """实验性 glow_mode="deglow_first"：先去发光，再走普通去文字路径。
+def erase_batch(images, *, workers: int | None = None, return_mask: bool = False,
+                **kw):
+    """批量并发擦除（多图并行；线程间经线程本地 wasm 核实例隔离）。
 
-    路径顺序与普通模式完全一致，只是在最前面插入一步「去发光」：
-      1) 原图定位文字蒙版(仅用于保护文字不被去发光误伤，不做色偏生长)；
-      2) 去发光：把文字外围的整片绿光晕拉向背景色，文字笔画原样保留；
-      3) 在干净图上走**普通去文字路径**：detect_text_mask(tint_fill=True)
-         → 膨胀 → 填充。残余绿由 tint_fill 并入蒙版 + 取样剔除兜底。
+    images    : 可迭代的 HxWx3 uint8 RGB 数组列表。
+    workers   : 并发线程数，默认 min(图数, CPU 核数)。
+    return_mask / **kw : 透传给 erase_text（每张图同一组参数）。
+
+    返回与输入同序的结果列表（erase_text 的返回元组）。
+
+    并发可行性依据：wasmtime 的 FFI 调用会释放 GIL（实测 2 线程双图填充
+    1.7x 加速），每个线程持有独立 TextCore 实例（wasmtime Store 非线程安全，
+    单例会在并发 alloc/dealloc 时踩内存）；DBNet 的 onnxruntime
+    InferenceSession.run 官方保证线程安全。单张图内部不做并行 —— 逐框拆分
+    会改变填充结果、破坏前后端逐字节一致，属有意为之的设计。
     """
-    t0 = time.time()
-
-    # 1) 定位文字(保护用)
-    tmask, _ = detect_text_mask(
-        rgb, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
-    if not tmask.any():
-        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
-                "method": "ml", "boxes": []}
-        return (rgb, tmask, meta) if return_mask else (rgb, meta)
-
-    # 2) 先去发光(文字保护, 去除外围绿光晕)
-    clean, _ = _deglow_full_green(rgb, tmask, strength=deglow_strength)
-
-    # 3) 普通去文字路径(干净图上): 检测蒙版(自动并入残余绿) → 填充
-    mask, boxes = detect_text_mask(
-        clean, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=True, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
-    if not mask.any():
-        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
-                "method": "ml", "boxes": [], "deglow_img": clean}
-        return (clean, mask, meta) if return_mask else (clean, meta)
-
-    # 填充取样剔除残余绿, 防复制进文字区
-    sample_exclude = _residual_green(clean, mask)
-    res = _run_fill(clean, mask, boxes, edge=edge, direction=direction,
-                    edge_aware=edge_aware,
-                    return_mask=return_mask, t0=t0, sample_exclude=sample_exclude,
-                    soft_expand=soft_expand)
-    if return_mask:
-        result, mask_filled, meta = res
-    else:
-        result, meta = res
-    # 去发光中间图供前端展示「去除发光后的全图」
-    meta["deglow_img"] = clean
-    return (result, mask_filled, meta) if return_mask else (result, meta)
+    from concurrent.futures import ThreadPoolExecutor
+    imgs = list(images)
+    if not imgs:
+        return []
+    n = workers or min(len(imgs), max(1, os.cpu_count() or 4))
+    with ThreadPoolExecutor(max_workers=n) as ex:
+        futs = [ex.submit(erase_text, img, return_mask=return_mask, **kw)
+                for img in imgs]
+        return [f.result() for f in futs]
 
 
 def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
@@ -647,51 +472,48 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
                      return_mask, fill_white: bool = True,
                      fill_max_dist: int = 12,
                      deglow_strength: float = 1.0,
-                     alpha_core: float = 0.65,
                      deglow_zone_ratio: float = 0.6,
                      deglow_zone_expand: int = 10,
                      deglow_protect_px: int = 1,
                      deglow_chroma_keep: bool = True,
-                     soft_expand: float = 0.0):
-    """v2 入口：先减绿度去发光 → 再对「去完发光的图」走普通去字算法(非高亮路径)。
+                     soft_expand: float = 0.0,
+                     tmask_hint: np.ndarray | None = None):
+    """v2 入口（唯一去发光算法，wasm 单核）：先减绿度去发光 → 再对「去完发光的图」
+    走普通去字算法。
 
-    与 v1 整片拉暗 / alpha 分解的根本区别：
-      - 去发光用「减绿度」(只动 G 通道、绿晕→中性灰、永不变黑、底层纹理保留)；
-      - 去字阶段**完全复用项目里已完善的「非高亮」算法**：在去完发光的 clean 图上
-        detect_text_mask(tint_fill=True, fill_white=...) → 膨胀 → patch_fill，
-        不再用自定义 core_mask 走捷径。发光图与普图的去字质量因此保持一致。
+    算法分解:
+      - 去发光用「减绿度」(只动 G 通道、绿晕→中性灰、永不变黑、底层纹理保留)，
+        由共享核 `deglow_full_green_v2` 完成（与浏览器同一份 wasm）；
+      - 去字阶段完全复用「非高亮」算法：在去完发光的 clean 图上
+        detect_text_mask(tint_fill=True, fill_white=...) → 并集 → 闭运算 →
+        亮核吸收 → patch_fill，不用自定义 core_mask 走捷径。发光图与普图的
+        去字质量因此保持一致。
     展示上「去发光」与「去文字」分两步：meta["deglow_img"] = clean(去发光中间图)，
     而 result = 在 clean 上去字后的最终结果；前端可分别呈现这两张图。
     """
     t0 = time.time()
     # 1) 定位文字(保护 + 生长种子；不做色偏生长, 避免把光晕并入蒙版)
-    tmask, _ = detect_text_mask(
-        rgb, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
+    if tmask_hint is not None:
+        tmask, _boxes = tmask_hint, []
+    else:
+        tmask, _boxes = detect_text_mask(
+            rgb, method="ml", q_off=q_off,
+            max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
+            max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
+            fill_max_dist=fill_max_dist,
+        )
     if not tmask.any():
         meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
                 "method": "ml", "boxes": []}
         return (rgb, tmask, meta) if return_mask else (rgb, meta)
 
     # 2) 去发光: 取 clean(供步骤3「去发光图上再检测」); 同时取 zone(亮核吸收用)。
-    #    按模式显式分流(不静默降级): 共享核可用 → 只走 wasm(与浏览器同一份 Rust
-    #    实现, 两端逐字节一致; Python 核心最终将被完全剔除, 不作回退)。
-    #    TEXTCORE_BACKEND=0(Python 核心调试模式) → cv2 路径。
-    if _shared_core.using_shared_core():
-        clean0, _core_unused, zone0 = _shared_core.deglow_full_green_v2(
-            rgb, tmask, strength=deglow_strength,
-            zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-            protect_px=deglow_protect_px, chroma_keep=1 if deglow_chroma_keep else 0)
-        zone0 = (zone0 > 0).astype(np.uint8) * 255
-    else:
-        clean0, _, zone0 = _deglow_full_green_v2(
-            rgb, tmask, strength=deglow_strength,
-            zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
-            protect_px=deglow_protect_px,
-            deglow_chroma_keep=deglow_chroma_keep, return_zone=True)
+    #    只走 wasm(与浏览器同一份 Rust 实现, 两端逐字节一致); Python 实现已删除。
+    clean0, _core_unused, zone0 = _shared_core.deglow_full_green_v2(
+        rgb, tmask, strength=deglow_strength,
+        zone_ratio=deglow_zone_ratio, zone_expand=deglow_zone_expand,
+        protect_px=deglow_protect_px, chroma_keep=1 if deglow_chroma_keep else 0)
+    zone0 = (zone0 > 0).astype(np.uint8) * 255
 
     # 3) 普通去文字蒙版 = 原图检测 ∪ 去发光图检测(tint=True) → 闭运算补断裂
     tm_clean, boxes = detect_text_mask(
@@ -708,11 +530,7 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
         return (clean0, np.zeros(rgb.shape[:2], np.uint8), meta) if return_mask \
             else (clean0, meta)
 
-    # 4) 蒙版修复(zone 亮核吸收) + 取样剔除 + 填充 —— 与 Python 核心同一条 cv2 链路。
-    #    _run_fill → patch_fill.inpaint: 平滑区(tex<flat_tex) cv2 TELEA; 纹理区在
-    #    共享核可用时走 Rust PatchMatch(与浏览器 patchmatchInpaintShared 同一份
-    #    wasm), 不可用回退 numpy 实现 —— 两者随机流已统一为 mulberry32,
-    #    相同输入逐字节一致。
+    # 4) 蒙版修复(zone 亮核吸收) + 取样剔除 + 填充(wasm patchmatch / wasm TELEA)
     mask = _fill_bright_near_mask(clean0, mask)
     mask = _absorb_zone_bright_core(clean0, rgb, mask, zone0, min_rgb_lo=100)
     if not mask.any():
@@ -737,85 +555,3 @@ def _erase_deglow_v2(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
     meta["deglow_img"] = clean0
     meta["glow_zone"] = zone0
     return (result, mask_filled, meta) if return_mask else (result, meta)
-
-
-def _erase_v4_deglow(rgb, *, edge, q_off, max_area_ratio, max_box_ratio,
-                     ml_max_side, direction, edge_aware,
-                     return_mask, fill_white: bool = True,
-                     fill_max_dist: int = 12,
-                     deglow_strength=1.0, glow_mode="auto"):
-    """v4.1 通用去发光方案：先去发光（deglow 包，三模式辨识+反演+重建），
-    再原样走普通去文字路径（detect_text_mask → 膨胀 → patch_fill）。
-
-    严格遵循项目约束「发光去除路径：先去发光 → 原样走普通去文字路径」。
-    """
-    t0 = time.time()
-
-    # 1) 定位文字（保护用，传给管线作为载体；tint 关闭避免把光晕并入蒙版）
-    tmask, _ = detect_text_mask(
-        rgb, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=False, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
-
-    # 2) 通用去发光（v4 管线；strength=0 即纯保护路径）
-    try:
-        from deglow import pipeline as v4_pipeline
-    except ImportError as e:
-        raise RuntimeError(
-            "deglow_scheme='v4' 需要完整仓库（实验性 deglow/ 模块不随 pip 包发布）；"
-            "请改用默认的 v2 方案，或 git clone 仓库后使用"
-        ) from e
-    res = v4_pipeline.run(rgb, carrier_mask=tmask,
-                          deglow_strength=deglow_strength)
-    clean = np.clip(res.image, 0, 255).astype(np.uint8)
-    if not res.has_glow:
-        clean = rgb
-    # 3) 普通去文字路径（干净图上）
-    mask, boxes = detect_text_mask(
-        clean, method="ml", q_off=q_off,
-        max_area_ratio=max_area_ratio, max_box_ratio=max_box_ratio,
-        max_side=ml_max_side, tint_fill=True, fill_white=fill_white,
-        fill_max_dist=fill_max_dist,
-    )
-    if not mask.any():
-        meta = {"mask_pix": 0, "mask_filled_pix": 0, "inpaint_seconds": 0.0,
-                "method": "ml", "boxes": [], "deglow_img": clean}
-        if res.has_glow:
-            meta["dglow_report"] = res.report
-        return (clean, mask, meta) if return_mask else (clean, meta)
-
-    # 填充取样剔除残余绿（未净发光边缘），防复制进文字区
-    sample_exclude = _residual_green(clean, mask)
-    fill = _run_fill(clean, mask, boxes, edge=edge,
-                     direction=direction, edge_aware=edge_aware,
-                     return_mask=return_mask,
-                     t0=t0, sample_exclude=sample_exclude)
-    if return_mask:
-        result, mask_filled, meta = fill
-    else:
-        result, meta = fill
-    meta["deglow_img"] = clean
-    if res.has_glow:
-        # 结构化报告 JSON 化（含每域 mode/α 分位数/三态计数/dye/σ̂_g）
-        meta["dglow_report"] = jsonify_report(res.report)
-    return (result, mask_filled, meta) if return_mask else (result, meta)
-
-
-def jsonify_report(rep: dict) -> dict:
-    """把 report 中的 numpy 标量转成原生 JSON 类型。"""
-    import json
-
-    def conv(v):
-        if isinstance(v, dict):
-            return {k: conv(x) for k, x in v.items()}
-        if isinstance(v, (list, tuple)):
-            return [conv(x) for x in v]
-        if isinstance(v, np.generic):
-            return v.item()
-        if isinstance(v, (np.ndarray,)):
-            return v.tolist()
-        return v
-
-    return json.loads(json.dumps(conv(rep), ensure_ascii=False))
