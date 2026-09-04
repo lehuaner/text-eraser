@@ -113,7 +113,14 @@ filled = inpaint(rgb, hole, sample_mask=255 - hole)
 | `q_off` | 55 | 蒙版紧密度 [30,70]，越高越贴字形 |
 | `direction` | None | 纹理方向角度°（木纹/条带类背景） |
 | `deglow_scheme` | "v2" | 去发光方案："v2" / "off"（无发光图自动零改动） |
+| `fill_white` | True | 临近纯白补全：把紧邻蒙版的亮白/抗锯齿残留并入蒙版。白字/高亮字**必须保持 True**——否则 Otsu 漏检的笔画残段（如"台"底横、"周"顶横）既残留在结果里，又会留在 patchmatch 取样区内被复制进填充区，导致填充明显偏白、与背景色差大 |
+| `fill_max_dist` | 12 | 孤立纯白段最大吞并距离（px，0=关闭）。小字/细笔画建议 8~15 |
 | `max_side` | 960 | DBNet 推理最长边，调大可提升小字召回 |
+
+> ⚠️ 调用方注意：若外部项目只需换背景色/填充色与原图一致，请不要关闭 `fill_white`、
+> 不要把 `fill_max_dist` 设为 0，也不要绕过 `erase_text` 直接用 `detect_text_mask`
+> 自建填充——蒙版修复（`_fill_nearby_white` / `_fill_bright_near_mask` /
+> 亮核吸收）都在 `erase_text` 编排内，跳过即复现"漏检笔画污染填充"问题。
 
 完整函数级 API 见 [docs/ALGORITHM.md](docs/ALGORITHM.md)；版本历史见 [CHANGELOG.md](CHANGELOG.md)。
 

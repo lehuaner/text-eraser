@@ -20,7 +20,7 @@
 // own best-source search, which is the conceptual basis and keeps output faithful.
 
 import * as cvb from './cv-bridge.js';
-import { median, mulberry32, erodeRect, erode3x3, dilateMax3x3 } from './linalg.js';
+import { median, percentile, mulberry32, erodeRect, erode3x3, dilateMax3x3 } from './linalg.js';
 
 const P = 7;          // patch size (odd)
 const HALF = P >> 1; // 3
@@ -95,12 +95,11 @@ export function patchmatchInpaint(rgb, H, W, mask255, opts = {}) {
 
   // ---- smooth-gradient TELEA fallback (mirrors textpatch_fill.py) ----
   // NOTE on fidelity: upstream (patch_fill.inpaint) fires TELEA when the ring
-  // texture median `tex < flat_tex` ONLY (the span>=flatSpan requirement was
-  // removed; `flatSpan` is kept in the signature for parity but the live gate
-  // is `tex < flatTex`). flatTex MUST equal Python's flat_tex default (20.0):
-  // a background with tex in [15, 20) would take TELEA on the backend but
-  // PatchMatch here. Flip FLAT_USE_SPAN=true to also require span>=flatSpan
-  // (the stricter spec prose variant).
+  // texture median AND p75 are both `tex < flat_tex` (2026-09-04 smear fix;
+  // the span>=flatSpan requirement was removed; `flatSpan` is kept in the
+  // signature for parity but the live gate is the median+p75 double check).
+  // flatTex MUST equal Python's flat_tex default (20.0). Flip
+  // FLAT_USE_SPAN=true to also require span>=flatSpan (the stricter spec prose variant).
   const FLAT_USE_SPAN = false;
   let spanCheck = true;
   if (direction === null) {
@@ -134,13 +133,18 @@ export function patchmatchInpaint(rgb, H, W, mask255, opts = {}) {
       const dil = cvb.dilateMaskRect(m, H, W, 41);
       const ring0 = new Uint8Array(n);
       for (let i = 0; i < n; i++) ring0[i] = (dil[i] && !m[i]) ? 1 : 0;
-      let tex = 0;
+      let tex = 0, texP75 = 0;
       if (ring0.some((v) => v)) {
         const rv = [];
         for (let i = 0; i < n; i++) if (ring0[i]) rv.push(grad0[i]);
         tex = median(rv);
+        // 2026-09-04 涂抹感修复: 与 wasm 权威判定同步的双门控(median+p75)。
+        // 只看中位数会把纹理像素占比不足一半的细纹理背景误判平滑 → TELEA 抹平。
+        texP75 = percentile(rv, 0.75);
       }
-      const fire = FLAT_USE_SPAN ? (spanCheck && tex < flatTex) : (tex < flatTex);
+      const fire = FLAT_USE_SPAN
+        ? (spanCheck && tex < flatTex && texP75 < flatTex)
+        : (tex < flatTex && texP75 < flatTex);
       if (fire) {
         const { rgb: prgb, H: pH, W: pW } = cvb.copyMakeBorderReplicate(rgb, OH, OW, PADM, PADM, PADM, PADM);
         const pmp = new Uint8Array(pH * pW);

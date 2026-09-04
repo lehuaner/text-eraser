@@ -148,13 +148,17 @@ def erode(mask, kernel, iterations=1):
 def morphology_ex(mask, op, kernel):
     """与 cv2.morphologyEx(mask, op, kernel) 匹配。op: cv2.MORPH_OPEN / MORPH_CLOSE。
 
-    注意：用分离式 dilate(erode)/erode(dilate) 组合（与浏览器 cv-bridge 相同），
+    注意：用分离式 dilate/erode 组合（与浏览器 cv-bridge 相同），
     而非 cv2 内部 morphologyEx（边界上与分离式最多差 1）—— 这是前后端一致的约定。
+    2026-09-04 修正: CLOSE 的旧实现 dilate(erode(x)) 实为「开」的组合, 会吃掉
+    1px 细笔画(实测"台"底横/"周"顶横从蒙版漏掉), 已改为教科书语义
+    CLOSE=erode(dilate(x))、OPEN=dilate(erode(x)), 并与 shared/src/deglow.rs
+    的 mask_close 同步修正, 两端保持逐位一致。
     """
     import cv2
     if op == cv2.MORPH_CLOSE:
-        return dilate(erode(mask, kernel), kernel)
-    return erode(dilate(mask, kernel), kernel)
+        return erode(dilate(mask, kernel), kernel)
+    return dilate(erode(mask, kernel), kernel)
 
 
 def resize_gray_cubic(u8, h2, w2):

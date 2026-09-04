@@ -2,6 +2,29 @@
 
 本文件记录 text-eraser 的显著变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.3.1] — 2026-09-04
+
+两个蒙版/填充质量修复（含 wasm 核重建，跨端逐字节一致保持）。
+
+### 修复
+
+- **TELEA 平滑门控误判细纹理背景（填充涂抹感）**：`pm_smooth_telea_with_flat_tex`
+  （wasm）/ `patch_fill.inpaint`（Python 预检）/ `browser/src/patchmatch.js`（JS 预检）
+  旧门控只看环带梯度**中位数** <20，纹理像素占比不足一半时中位数被平滑像素拉低
+  （实测"座驾/展台/周边" med=13~19 但 p75=31~42），细纹理背景被误入 TELEA 扩散
+  填充 → 填充区明显涂抹感。现改为**中位数与 p75 双门控**（均 <flat_tex 才判平滑）：
+  三张问题图转走 PatchMatch，纹理自然延续；真平滑/渐变背景（p75≤16，含杂色案例
+  1788077005814）不受影响。wasm 重建并同步，跨端 parity 4 基准图 diff=0。
+
+- **MORPH_CLOSE 语义反转**：`_shared_core.morphology_ex` 与 wasm 核 `mask_close`
+  （shared/src/deglow.rs，浏览器 `erase_text_glyphs` 内部路径）的 CLOSE 分支旧实现为
+  `dilate(erode(x))` —— 实为**开运算**组合，会吃掉 1px 细笔画。实测后果：低分辨率
+  发光白字（如"展台/周边"）的"台"底横、"周"顶横从蒙版漏掉，漏检段既残留在结果里、
+  又留在 patchmatch 取样区被复制，填充偏白。已改为教科书语义 CLOSE=erode(dilate(x))、
+  OPEN=dilate(erode(x))，Python 与 wasm 同步修正并重建 textcore.wasm，跨端逐字节一致
+  （parity_check 4 基准图 RESULT/MASK diff=0）。smoke test 断言已改为对照真 cv2 闭/开
+  语义（旧断言把错误分解式当参照物，未拦住此 bug）。
+
 ## [0.3.0] — 2026-09-04
 
 相比 0.2.1 的架构级重写：**算法核心从「Python + cv2 多套实现」收敛为「一份 textcore.wasm 共享核」**，后端与浏览器调同一份字节码，结果逐字节一致。

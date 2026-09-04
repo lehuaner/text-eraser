@@ -9,7 +9,7 @@ build-backend = "setuptools.build_meta"
 # (二者严禁同环境混装, OpenCV 官方禁止), 仅 DBNet 检测链需要。
 # wasmtime 是 0.3.0 起的硬依赖: 算法核心 = 打包随发的 textcore.wasm 共享核。
 name = "text-eraser"
-version = "0.3.0"
+version = "0.3.1"
 description = "图片文字擦除工具：DBNet 文字检测 + PatchMatch 内容识别填充 + 去发光（wasm 共享算法核，前后端逐字节一致），附本地 Web 界面"
 readme = "README.md"
 license = { text = "MIT" }

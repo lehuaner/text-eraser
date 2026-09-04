@@ -73,14 +73,17 @@ for ksize in (3, 5, 7):
 
 # 6) morphology_ex close/open
 # NOTE: the backend uses separate cv2.erode/cv2.dilate calls, NOT cv2.morphologyEx — and
-# cv2.morphologyEx differs from the naive dilate(erode) composition at borders (cv2 internal
+# cv2.morphologyEx differs from the decomposed composition at borders (cv2 internal
 # border handling). So we validate morphology_ex against the DECOMPOSED form it mimics.
+# 2026-09-04 fix: CLOSE must be erode(dilate(x)) — the old assertion
+# dilate(erode(x)) baked in an OPEN composition and masked the bug where 1px
+# thin strokes (台底横/周顶横) vanished from the mask.
 kr3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
 check("morph close", sc.morphology_ex(mask, cv2.MORPH_CLOSE, kr3),
-      cv2.dilate(cv2.erode(mask, kr3), kr3), exact=True)
+      cv2.erode(cv2.dilate(mask, kr3), kr3), exact=True)
 kr2 = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
 check("morph open", sc.morphology_ex(mask, cv2.MORPH_OPEN, kr2),
-      cv2.erode(cv2.dilate(mask, kr2), kr2), exact=True)
+      cv2.dilate(cv2.erode(mask, kr2), kr2), exact=True)
 
 # 7) np.ones kernels
 check("dilate np.ones(3)", sc.dilate(mask, np.ones((3,3),np.uint8)), cv2.dilate(mask, np.ones((3,3),np.uint8)), exact=True)

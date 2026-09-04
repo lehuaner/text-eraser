@@ -81,10 +81,10 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
     direction    : 可选 float(角度°, 图像坐标 0°=+x右 / 90°=+y下)。
                    提供时进入**方向填充模式**：源候选被限制在过目标点、沿 direction
                    的直线上双向采样 —— 适合有主导纹理方向的图像(木纹/岩石条带)。
-    flat_span / flat_tex : 平滑渐变背景自适应门。洞外四边环带的中位亮度极差
-                   ≥flat_span **且** 环带梯度中位 <flat_tex 时，判定背景为
-                   「强亮度渐变 + 无纹理可复制」→ 扩散插值(TELEA)填充（wasm
-                   `pm_smooth_telea_full`，判定+填充与浏览器逐字节一致）。
+    flat_span / flat_tex : 平滑渐变背景自适应门。洞外环带的梯度**中位数与 p75
+                   同时** <flat_tex 时，判定背景为「无纹理可复制」→ 扩散插值
+                   (TELEA)填充（wasm `pm_smooth_telea_full`，判定+填充与浏览器
+                   逐字节一致）。p75 双门控修复细纹理背景被中位数误判的涂抹感。
                    纹理背景或均匀背景不受影响，仍走 PatchMatch。
     return       : HxWx3 uint8
     raises       : text_eraser._textcore.CoreLoadError（wasm 核不可用时快速失败）
@@ -118,8 +118,16 @@ def inpaint(image_rgb, mask, sample_mask=None, should_cancel=None, direction=Non
         gy0 = cv2.Sobel(gray0, cv2.CV_32F, 0, 1, ksize=3)
         grad0 = np.sqrt(gx0 ** 2 + gy0 ** 2)
         ring0 = (cv2.dilate(m.astype(np.uint8), np.ones((41, 41), np.uint8)) > 0) & ~m
-        tex = float(np.median(grad0[ring0])) if ring0.any() else 0.0
-        if tex < flat_tex:
+        # 2026-09-04 涂抹感修复: 中位数 + p75 双门控(与 wasm 权威判定一致)。
+        # 只看中位数时, 纹理像素占比不足一半的细纹理背景(实测 p75=31~42)被误判
+        # 平滑 → TELEA 抹平纹理; p75 同低于阈值才真平滑(实测平滑背景 p75<=16)。
+        if ring0.any():
+            rv = grad0[ring0]
+            tex = float(np.median(rv))
+            tex_p75 = float(np.percentile(rv, 75))
+        else:
+            tex = tex_p75 = 0.0
+        if tex < flat_tex and tex_p75 < flat_tex:
             # wasm 权威判定: 触发→返回 TELEA 填充; 未触发(阈值 ULP 级跨线)→
             # 与浏览器同步继续走 patchmatch, 不允许任何 Python 侧降级。
             _t = smooth_telea_full(image_rgb, m, flat_tex)

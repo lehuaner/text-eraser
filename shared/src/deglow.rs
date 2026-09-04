@@ -1926,11 +1926,11 @@ fn box_dilate_iters(mask: &[u8], h: usize, w: usize, iters: i32) -> Vec<u8> {
 
 /// cv2.morphologyEx(mask, MORPH_CLOSE, ones((3,3))).
 fn mask_close(mask: &[u8], h: usize, w: usize) -> Vec<u8> {
-    // 与后端 `_shared_core.morphology_ex`(MORPH_CLOSE 分支) 逐位一致:
-    // 该 shim 的 CLOSE 分支实现为 dilate(erode(x)) —— 即先腐蚀后膨胀(注意:
-    // 这是形态学"开"的组合, 但它是后端既有且经用户验收的行为, 两端必须
-    // 一致, 故浏览器侧同构复刻, 不按教科书语义"修正")。
-    box_dilate(&box_erode(mask, h, w), h, w)
+    // 闭运算教科书语义: 先膨胀后腐蚀 (dilate → erode)。
+    // 2026-09-04 修正: 旧实现 box_dilate(box_erode(x)) 是「开」的组合, 会吃掉
+    // 1px 细笔画(实测"台"底横/"周"顶横从蒙版漏掉), 与后端 `_shared_core.
+    // morphology_ex` 的 CLOSE 分支同日一并修正, 两端保持逐位一致。
+    box_erode(&box_dilate(mask, h, w), h, w)
 }
 
 /// `_fill_bright_near_mask` port (white-text bright-side connectivity completion).

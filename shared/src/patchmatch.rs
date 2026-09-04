@@ -613,8 +613,9 @@ fn pm_box_dilate(m: &[u8], h: i32, w: i32, r: i32) -> Vec<u8> {
 ///     pixels in each; need >= 2 bands with data (skips tiny / border masks).
 ///   - Sobel gradient magnitude `grad0` on the clamped grayscale.
 ///   - `ring0 = dilate(mask, 41x41) & ~mask` (20px ring around the hole).
-///   - `tex = median(grad0[ring0])`; the flat `span` test was removed upstream,
-///     only `tex < flat_tex` remains.
+///   - `tex_med = median(grad0[ring0])`, `tex_p75 = percentile(grad0[ring0], 75)`;
+///     the flat `span` test was removed upstream, gate fires only when BOTH
+///     `tex_med < flat_tex && tex_p75 < flat_tex` (2026-09-04 smear fix).
 ///   - Only runs when there is NO direction mode (`direction is None` on the
 ///     Python side → `use_dir == false` here).
 pub(crate) fn pm_smooth_telea_with_flat_tex(rgb: &[f32], mask: &[u8], h: i32, w: i32, flat_tex: f32) -> Option<Vec<f32>> {
@@ -707,11 +708,37 @@ pub(crate) fn pm_smooth_telea_with_flat_tex(rgb: &[f32], mask: &[u8], h: i32, w:
             ring.push(grad[i]);
         }
     }
-    let tex = if ring.is_empty() { 0.0 } else { pm_median(&mut ring) };
-    if tex < flat_tex {
+    // 2026-09-04 涂抹感修复: 旧门控只看环带梯度中位数, 纹理像素占比不足一半时
+    // 中位数被平滑像素拉低, 细纹理背景(实测"座驾/展台/周边" p75=31~42)被误判为
+    // 平滑 → TELEA 抹平纹理。现要求中位数与 p75 同时低于阈值: 真平滑/渐变背景
+    // 两者都≈0~16(含杂色案例 1788077005814), 不受影响; 有真实纹理的背景 p75
+    // 显著超阈 → 走 PatchMatch 保留纹理。
+    let (tex_med, tex_p75) = if ring.is_empty() {
+        (0.0, 0.0)
+    } else {
+        let med = pm_median(&mut ring); // sorts ring in place
+        (med, pm_percentile_sorted(&ring, 0.75))
+    };
+    if tex_med < flat_tex && tex_p75 < flat_tex {
         return Some(crate::telea::telea_inpaint(rgb, mask, h, w, 3));
     }
     None
+}
+
+/// np.percentile-style linear interpolation on an **already-sorted** slice.
+fn pm_percentile_sorted(sorted: &[f32], q: f32) -> f32 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return sorted[0];
+    }
+    let pos = q * (n - 1) as f32;
+    let lo = pos.floor() as usize;
+    let hi = (lo + 1).min(n - 1);
+    let frac = pos - lo as f32;
+    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
 }
 
 /// Default-threshold wrapper matching `patch_fill.inpaint`'s `flat_tex=20.0`.
